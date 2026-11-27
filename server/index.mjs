@@ -82,14 +82,23 @@ function cleanWorkflow(input) {
   if (!name) return null;
   const active = Boolean(input.active);
   const nextRun = Number(input.nextRunAt);
+  const actionType = input.actionType === 'webhook' || input.actionType === 'google-sheets'
+    ? input.actionType
+    : 'reminder';
+  const action = actionType === 'webhook'
+    ? 'Send webhook'
+    : actionType === 'google-sheets'
+      ? 'Add row to Google Sheets'
+      : 'Record a reminder';
   return {
     id: String(input.id || id()),
     name,
     description: String(input.description || '').trim().slice(0, 180) || 'A workflow created in DevFlow.',
     trigger: intervalMinutes ? 'Every ' + intervalMinutes + ' minute' + (intervalMinutes === 1 ? '' : 's') : 'Manual only',
-    action: input.actionType === 'webhook' ? 'Send webhook' : 'Record a reminder',
-    actionType: input.actionType === 'webhook' ? 'webhook' : 'reminder',
-    webhookUrl: input.actionType === 'webhook' ? String(input.webhookUrl || '').trim() : '',
+    action,
+    actionType,
+    webhookUrl: actionType === 'webhook' ? String(input.webhookUrl || '').trim() : '',
+    googleSheetsUrl: actionType === 'google-sheets' ? String(input.googleSheetsUrl || '').trim() : '',
     active,
     runs: Math.max(0, Number.parseInt(input.runs, 10) || 0),
     updatedAt: String(input.updatedAt || 'Just now'),
@@ -121,6 +130,20 @@ function isPublicAddress(address) {
     return (first & 0xe000) === 0x2000 && !normalized.startsWith('2001:db8:');
   }
   return false;
+}
+
+function workflowEventPayload(workflow, source) {
+  return {
+    event: 'devflow.workflow.run',
+    workflow: {
+      id: workflow.id,
+      name: workflow.name,
+      description: workflow.description,
+      trigger: workflow.trigger
+    },
+    source,
+    executedAt: new Date().toISOString()
+  };
 }
 
 async function deliverWebhook(workflow, source) {
@@ -157,17 +180,7 @@ async function deliverWebhook(workflow, source) {
       redirect: 'manual',
       signal: controller.signal,
       headers: { 'Content-Type': 'application/json', 'User-Agent': 'DevFlow-Webhook/0.1' },
-      body: JSON.stringify({
-        event: 'devflow.workflow.run',
-        workflow: {
-          id: workflow.id,
-          name: workflow.name,
-          description: workflow.description,
-          trigger: workflow.trigger
-        },
-        source,
-        executedAt: new Date().toISOString()
-      })
+      body: JSON.stringify(workflowEventPayload(workflow, source))
     });
     if (!response.ok) {
       return { ok: false, details: 'Webhook endpoint returned HTTP ' + response.status + '.' };
@@ -182,13 +195,90 @@ async function deliverWebhook(workflow, source) {
   }
 }
 
-async function executeWorkflowAction(workflow, source) {
-  if (workflow.actionType !== 'webhook') {
-    return { ok: true, details: source === 'scheduled'
-      ? 'Scheduled reminder recorded by the DevFlow backend.'
-      : 'Manual reminder recorded by the DevFlow backend.' };
+async function deliverGoogleSheets(workflow, source) {
+  let target;
+  try {
+    target = new URL(workflow.googleSheetsUrl);
+  } catch {
+    return { ok: false, details: 'Google Sheets web app URL is invalid.' };
   }
-  return deliverWebhook(workflow, source);
+
+  if (target.protocol !== 'https:' || target.hostname.toLowerCase() !== 'script.google.com' ||
+      target.username || target.password || (target.port && target.port !== '443') ||
+      !/^\/macros\/s\/[^/]+\/exec\/?$/.test(target.pathname)) {
+    return { ok: false, details: 'Use the Google Apps Script web app URL ending in /exec.' };
+  }
+
+  try {
+    const addresses = await lookup(target.hostname, { all: true, verbatim: true });
+    if (!addresses.length || addresses.some((entry) => !isPublicAddress(entry.address))) {
+      return { ok: false, details: 'Google Apps Script host did not resolve to public IP addresses.' };
+    }
+  } catch {
+    return { ok: false, details: 'Could not connect to Google Apps Script. Check the URL and internet connection.' };
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12000);
+  try {
+    let response = await fetch(target, {
+      method: 'POST',
+      redirect: 'manual',
+      signal: controller.signal,
+      headers: { 'Content-Type': 'application/json', 'User-Agent': 'DevFlow-Google-Sheets/0.1' },
+      body: JSON.stringify(workflowEventPayload(workflow, source))
+    });
+
+    // Apps Script ContentService commonly redirects the response to script.googleusercontent.com.
+    // Only follow that known Google response host; do not follow arbitrary webhook redirects.
+    if ([301, 302, 303].includes(response.status)) {
+      const location = response.headers.get('location');
+      if (!location) {
+        return { ok: false, details: 'Google Apps Script returned a redirect without a destination.' };
+      }
+      let redirected;
+      try { redirected = new URL(location, target); } catch {}
+      if (!redirected || redirected.protocol !== 'https:' ||
+          redirected.hostname.toLowerCase() !== 'script.googleusercontent.com' ||
+          redirected.username || redirected.password || (redirected.port && redirected.port !== '443')) {
+        return { ok: false, details: 'Google Apps Script returned an unexpected redirect. The row may not have been confirmed.' };
+      }
+      const redirectedAddresses = await lookup(redirected.hostname, { all: true, verbatim: true });
+      if (!redirectedAddresses.length || redirectedAddresses.some((entry) => !isPublicAddress(entry.address))) {
+        return { ok: false, details: 'Google Apps Script response host did not resolve to public IP addresses.' };
+      }
+      response = await fetch(redirected, {
+        method: 'GET',
+        redirect: 'manual',
+        signal: controller.signal,
+        headers: { 'User-Agent': 'DevFlow-Google-Sheets/0.1' }
+      });
+    }
+
+    if (!response.ok || response.status >= 300) {
+      return { ok: false, details: 'Google Sheets endpoint returned HTTP ' + response.status + '.' };
+    }
+    let result;
+    try { result = JSON.parse(await response.text()); } catch {}
+    if (!result || result.ok !== true) {
+      return { ok: false, details: 'Google Apps Script did not confirm the spreadsheet update. Check its deployment and permissions.' };
+    }
+    return { ok: true, details: 'A new row was added to Google Sheets (HTTP ' + response.status + ').' };
+  } catch (error) {
+    return { ok: false, details: error.name === 'AbortError'
+      ? 'Google Sheets request timed out after 12 seconds.'
+      : 'Google Sheets delivery failed. Check the deployment URL and internet connection.' };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function executeWorkflowAction(workflow, source) {
+  if (workflow.actionType === 'webhook') return deliverWebhook(workflow, source);
+  if (workflow.actionType === 'google-sheets') return deliverGoogleSheets(workflow, source);
+  return { ok: true, details: source === 'scheduled'
+    ? 'Scheduled reminder recorded by the DevFlow backend.'
+    : 'Manual reminder recorded by the DevFlow backend.' };
 }
 
 async function handle(request, response) {
@@ -240,14 +330,28 @@ async function handle(request, response) {
         return sendJson(response, 400, { error: 'Enter a valid public HTTPS webhook URL.' });
       }
     }
+    if (workflow.actionType === 'google-sheets') {
+      let parsed;
+      try { parsed = new URL(workflow.googleSheetsUrl); } catch {}
+      if (!workflow.googleSheetsUrl || workflow.googleSheetsUrl.length > 2048 || !parsed ||
+          parsed.protocol !== 'https:' || parsed.hostname.toLowerCase() !== 'script.google.com' ||
+          parsed.username || parsed.password || !/^\/macros\/s\/[^/]+\/exec\/?$/.test(parsed.pathname)) {
+        return sendJson(response, 400, { error: 'Enter the Google Apps Script web app URL ending in /exec.' });
+      }
+    }
     state.workflows.unshift(workflow);
-    addActivity('Created', workflow.name, workflow.actionType === 'webhook'
+    const createdDetails = workflow.actionType === 'webhook'
       ? (workflow.intervalMinutes
         ? 'Webhook workflow saved. It will send an HTTP POST to the configured endpoint when scheduled.'
         : 'Webhook workflow saved. It will send an HTTP POST when manually run.')
-      : (workflow.intervalMinutes
-        ? 'Workflow saved on the DevFlow backend. It will be scheduled while the backend is running.'
-        : 'Manual workflow created and saved on the DevFlow backend.'));
+      : workflow.actionType === 'google-sheets'
+        ? (workflow.intervalMinutes
+          ? 'Google Sheets workflow saved. It will add a spreadsheet row on each scheduled run.'
+          : 'Google Sheets workflow saved. It will add a spreadsheet row when manually run.')
+        : (workflow.intervalMinutes
+          ? 'Workflow saved on the DevFlow backend. It will be scheduled while the backend is running.'
+          : 'Manual workflow created and saved on the DevFlow backend.');
+    addActivity('Created', workflow.name, createdDetails);
     await persist();
     return sendJson(response, 201, snapshot());
   }
@@ -280,7 +384,9 @@ async function handle(request, response) {
       workflow.updatedAt = 'Just now';
       const eventType = workflow.actionType === 'webhook'
         ? (result.ok ? 'Webhook delivered' : 'Webhook failed')
-        : 'Run';
+        : workflow.actionType === 'google-sheets'
+          ? (result.ok ? 'Google Sheets updated' : 'Google Sheets failed')
+          : 'Run';
       addActivity(eventType, workflow.name, result.details);
       await persist();
       return sendJson(response, 200, snapshot());
@@ -317,7 +423,9 @@ async function runDueWorkflows() {
       workflow.nextRunAt = Date.now() + workflow.intervalMinutes * 60_000;
       const eventType = workflow.actionType === 'webhook'
         ? (result.ok ? 'Webhook delivered' : 'Webhook failed')
-        : 'Scheduled run';
+        : workflow.actionType === 'google-sheets'
+          ? (result.ok ? 'Google Sheets updated' : 'Google Sheets failed')
+          : 'Scheduled run';
       addActivity(eventType, workflow.name, result.details);
       console.log('[scheduler] ' + (result.ok ? 'Completed' : 'Failed') + ' scheduled action: ' + workflow.name);
     }
