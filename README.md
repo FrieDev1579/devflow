@@ -9,6 +9,7 @@ A lightweight, beginner-friendly workspace for creating and managing simple work
 - Responsive workflow dashboard
 - Create, search, pause, resume, and delete workflows
 - Run workflows in demo mode and track demo run counts
+- Activity history for workflow creation, runs, pauses, resumes, and deletions
 - Browser-local persistence using `localStorage`
 - Starter workflows to explore the interface
 
@@ -39,7 +40,7 @@ npm run preview
 
 ## Current limitations
 
-This is a frontend MVP. It does not yet include user accounts, a server-side database, scheduled jobs, third-party integrations, or real background automation. Workflow data is stored in the current browser only. The Run button demonstrates the interaction and updates a local counter; it does not execute external actions.
+This is a frontend MVP. It does not yet include user accounts, a server-side database, scheduled jobs, third-party integrations, or real background automation. Workflow and activity data are stored in the current browser only. The Activity page records interface actions locally. The Run button demonstrates the interaction and updates a local counter; it does not execute external actions.
 
 ## Roadmap
 
@@ -47,7 +48,7 @@ This is a frontend MVP. It does not yet include user accounts, a server-side dat
 - [ ] Add secure authentication and workspace accounts
 - [ ] Build a visual workflow editor
 - [ ] Add real triggers and action integrations
-- [ ] Add execution logs, retries, and error handling
+- [ ] Add server-side execution logs, retries, and error handling
 - [ ] Add automated tests and deployment workflow
 
 ## Contributing
