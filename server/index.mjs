@@ -12,6 +12,17 @@ const HOST = '127.0.0.1';
 const PORT = 3001;
 const MAX_BODY = 1024 * 1024;
 
+const GOOGLE_SHEETS_FIELD_LABELS = Object.freeze({
+  receivedAt: 'Received at',
+  workflowName: 'Workflow name',
+  workflowId: 'Workflow ID',
+  description: 'Description',
+  trigger: 'Trigger',
+  source: 'Run source',
+  executedAt: 'Executed at'
+});
+const DEFAULT_GOOGLE_SHEETS_FIELDS = Object.keys(GOOGLE_SHEETS_FIELD_LABELS);
+
 let state = { workflows: [], activity: [] };
 let persistQueue = Promise.resolve();
 let schedulerBusy = false;
@@ -90,6 +101,19 @@ function cleanWorkflow(input) {
     : actionType === 'google-sheets'
       ? 'Add row to Google Sheets'
       : 'Record a reminder';
+  const googleSheetsFields = actionType === 'google-sheets'
+    ? (Array.isArray(input.googleSheetsFields)
+      ? [...new Set(input.googleSheetsFields.filter((field) =>
+          Object.hasOwn(GOOGLE_SHEETS_FIELD_LABELS, field)
+        ))]
+      : [...DEFAULT_GOOGLE_SHEETS_FIELDS])
+    : [];
+  const googleSheetsCustomFields = actionType === 'google-sheets' && Array.isArray(input.googleSheetsCustomFields)
+    ? input.googleSheetsCustomFields.slice(0, 10).map((field) => ({
+        name: String(field?.name || '').trim().slice(0, 60),
+        value: String(field?.value ?? '').trim().slice(0, 200)
+      })).filter((field) => field.name)
+    : [];
   return {
     id: String(input.id || id()),
     name,
@@ -99,6 +123,8 @@ function cleanWorkflow(input) {
     actionType,
     webhookUrl: actionType === 'webhook' ? String(input.webhookUrl || '').trim() : '',
     googleSheetsUrl: actionType === 'google-sheets' ? String(input.googleSheetsUrl || '').trim() : '',
+    googleSheetsFields,
+    googleSheetsCustomFields,
     active,
     runs: Math.max(0, Number.parseInt(input.runs, 10) || 0),
     updatedAt: String(input.updatedAt || 'Just now'),
@@ -144,6 +170,40 @@ function workflowEventPayload(workflow, source) {
     source,
     executedAt: new Date().toISOString()
   };
+}
+
+function googleSheetsEventPayload(workflow, source) {
+  const payload = workflowEventPayload(workflow, source);
+  const values = {
+    receivedAt: new Date().toISOString(),
+    workflowName: workflow.name,
+    workflowId: workflow.id,
+    description: workflow.description,
+    trigger: workflow.trigger,
+    source,
+    executedAt: payload.executedAt
+  };
+  const selectedFields = Array.isArray(workflow.googleSheetsFields)
+    ? workflow.googleSheetsFields
+    : DEFAULT_GOOGLE_SHEETS_FIELDS;
+  const sheetsFields = selectedFields
+    .filter((key) => Object.hasOwn(GOOGLE_SHEETS_FIELD_LABELS, key))
+    .map((key) => ({
+      key,
+      label: GOOGLE_SHEETS_FIELD_LABELS[key],
+      value: values[key] ?? ''
+    }));
+  const customFields = Array.isArray(workflow.googleSheetsCustomFields)
+    ? workflow.googleSheetsCustomFields
+    : [];
+  customFields.forEach((field, index) => {
+    sheetsFields.push({
+      key: 'custom-' + index,
+      label: String(field.name || '').trim(),
+      value: String(field.value ?? '')
+    });
+  });
+  return { ...payload, sheetsFields };
 }
 
 async function deliverWebhook(workflow, source) {
@@ -226,7 +286,7 @@ async function deliverGoogleSheets(workflow, source) {
       redirect: 'manual',
       signal: controller.signal,
       headers: { 'Content-Type': 'application/json', 'User-Agent': 'DevFlow-Google-Sheets/0.1' },
-      body: JSON.stringify(workflowEventPayload(workflow, source))
+      body: JSON.stringify(googleSheetsEventPayload(workflow, source))
     });
 
     // Apps Script ContentService commonly redirects the response to script.googleusercontent.com.
@@ -337,6 +397,17 @@ async function handle(request, response) {
           parsed.protocol !== 'https:' || parsed.hostname.toLowerCase() !== 'script.google.com' ||
           parsed.username || parsed.password || !/^\/macros\/s\/[^/]+\/exec\/?$/.test(parsed.pathname)) {
         return sendJson(response, 400, { error: 'Enter the Google Apps Script web app URL ending in /exec.' });
+      }
+      const columnLabels = workflow.googleSheetsFields.map((key) => GOOGLE_SHEETS_FIELD_LABELS[key])
+        .concat(workflow.googleSheetsCustomFields.map((field) => field.name));
+      const normalizedLabels = columnLabels.map((label) => label.trim().toLowerCase());
+      if (columnLabels.length === 0) {
+        return sendJson(response, 400, { error: 'Choose at least one Google Sheets column or add a custom column.' });
+      }
+      if (workflow.googleSheetsCustomFields.length > 10 ||
+          workflow.googleSheetsCustomFields.some((field) => !field.name || !field.value) ||
+          new Set(normalizedLabels).size !== normalizedLabels.length) {
+        return sendJson(response, 400, { error: 'Custom column names and values must be filled in and column names must be unique.' });
       }
     }
     state.workflows.unshift(workflow);
