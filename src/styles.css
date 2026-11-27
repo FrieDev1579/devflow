@@ -5,3 +5,24 @@
 /* Make status chips override the generic workflow button styling. */
 .workflow button.pill.on{background:#d1fae5;color:#047857;border:1px solid #6ee7b7;font-weight:700}
 .workflow button.pill.off{background:#fef3c7;color:#92400e;border:1px solid #fcd34d;font-weight:700}
+
+/* Activity history */
+.nav{display:block;width:100%;border:0;background:transparent;text-align:left;font:inherit;cursor:pointer}
+.nav.active{background:#252e40;color:white}
+.nav:not(.active):hover{background:#1d293b;color:#fff}
+.activity-panel{padding-bottom:8px}
+.activity-count{color:#8b93a3;font-size:11px}
+.activity-list{display:flex;flex-direction:column}
+.activity-item{display:flex;gap:13px;align-items:flex-start;padding:17px 8px;border-top:1px solid #f0f1f5}
+.activity-icon{width:32px;height:32px;flex:0 0 32px;border-radius:50%;display:grid;place-items:center;font-weight:700;font-size:14px}
+.activity-icon.created{background:#eef2ff;color:#555bd1}
+.activity-icon.run{background:#e0f2fe;color:#0369a1}
+.activity-icon.paused{background:#fef3c7;color:#92400e}
+.activity-icon.resumed{background:#d1fae5;color:#047857}
+.activity-icon.deleted{background:#fee2e2;color:#b91c1c}
+.activity-copy{flex:1;min-width:0}
+.activity-copy>div{display:flex;justify-content:space-between;gap:12px;align-items:center}
+.activity-copy b{color:#333b4e;font-size:12px}
+.activity-copy time{color:#9aa1af;font-size:10px;white-space:nowrap}
+.activity-copy p{color:#8992a2;font-size:11px;margin:5px 0 0;line-height:1.5}
+@media(max-width:520px){.activity-copy>div{align-items:flex-start;flex-direction:column;gap:4px}}
