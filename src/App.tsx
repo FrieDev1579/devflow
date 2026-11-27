@@ -6,8 +6,9 @@ type Workflow = {
   description: string;
   trigger: string;
   action: string;
-  actionType?: 'reminder' | 'webhook';
+  actionType?: 'reminder' | 'webhook' | 'google-sheets';
   webhookUrl?: string;
+  googleSheetsUrl?: string;
   active: boolean;
   runs: number;
   updatedAt: string;
@@ -62,8 +63,9 @@ export default function App() {
   const [name,setName]=useState('');
   const [description,setDescription]=useState('');
   const [trigger,setTrigger]=useState('manual');
-  const [actionType,setActionType]=useState<'reminder'|'webhook'>('reminder');
+  const [actionType,setActionType]=useState<'reminder'|'webhook'|'google-sheets'>('reminder');
   const [webhookUrl,setWebhookUrl]=useState('');
+  const [googleSheetsUrl,setGoogleSheetsUrl]=useState('');
   const [notificationPermission,setNotificationPermission]=useState<NotificationPermission | 'unsupported'>(() =>
     typeof window !== 'undefined' && 'Notification' in window ? Notification.permission : 'unsupported'
   );
@@ -111,12 +113,18 @@ export default function App() {
         if (!mounted) return;
         const freshEvents=remote.activity.filter(event=>
           !seenEvents.current.has(event.id) &&
-          (event.type==='Scheduled run' || event.type==='Webhook delivered' || event.type==='Webhook failed')
+          (event.type==='Scheduled run' || event.type==='Webhook delivered' || event.type==='Webhook failed' ||
+            event.type==='Google Sheets updated' || event.type==='Google Sheets failed')
         );
         if (notificationPermission==='granted' && typeof Notification!=='undefined') {
           freshEvents.forEach(event=>{
             try {
-              new Notification(event.type==='Webhook failed'?'DevFlow webhook failed':'DevFlow workflow completed',{
+              new Notification(
+                event.type==='Webhook failed' || event.type==='Google Sheets failed'
+                  ? 'DevFlow integration failed'
+                  : event.type==='Google Sheets updated'
+                    ? 'Google Sheets updated'
+                    : 'DevFlow workflow completed',{
                 body:event.workflowName+': '+event.details,
                 tag:'devflow-'+event.id
               });
@@ -182,6 +190,18 @@ export default function App() {
         return;
       }
     }
+    if (actionType==='google-sheets') {
+      try {
+        const parsed=new URL(googleSheetsUrl.trim());
+        if (parsed.protocol!=='https:' || parsed.hostname.toLowerCase()!=='script.google.com' ||
+            !/^\/macros\/s\/[^/]+\/exec\/?$/.test(parsed.pathname)) {
+          throw new Error('Paste the Google Apps Script web app URL ending in /exec.');
+        }
+      } catch {
+        setNotice('Paste a valid Google Apps Script web app URL ending in /exec.');
+        return;
+      }
+    }
     const intervalMinutes=trigger==='every-1-minute'?1:trigger==='every-5-minutes'?5:undefined;
     try {
       const remote=await apiRequest('/api/workflows',{
@@ -191,7 +211,8 @@ export default function App() {
           description:description.trim(),
           intervalMinutes,
           actionType,
-          webhookUrl:actionType==='webhook'?webhookUrl.trim():''
+          webhookUrl:actionType==='webhook'?webhookUrl.trim():'',
+          googleSheetsUrl:actionType==='google-sheets'?googleSheetsUrl.trim():''
         })
       });
       setItems(remote.workflows);
@@ -202,12 +223,15 @@ export default function App() {
       setTrigger('manual');
       setActionType('reminder');
       setWebhookUrl('');
+      setGoogleSheetsUrl('');
       setCreating(false);
       setNotice(actionType==='webhook'
         ? 'Webhook workflow saved. Click Run to send a test POST to your endpoint.'
-        : intervalMinutes
-          ? 'Scheduled reminder saved on the backend.'
-          : 'Workflow saved on the DevFlow backend.');
+        : actionType==='google-sheets'
+          ? 'Google Sheets workflow saved. Click Run to add a test row to your spreadsheet.'
+          : intervalMinutes
+            ? 'Scheduled reminder saved on the backend.'
+            : 'Workflow saved on the DevFlow backend.');
     } catch (error) {
       setNotice(error instanceof Error?error.message:'Could not create the workflow.');
     }
@@ -260,7 +284,7 @@ export default function App() {
     return Number.isNaN(date.getTime())?'Just now':date.toLocaleString([], {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
   }
   const eventClass=(type:string)=>type.toLowerCase().replace(/\s+/g,'-');
-  const eventIcon=(type:string)=>type==='Created'?'＋':type==='Run'?'▶':type==='Scheduled run'?'⏱':type==='Webhook delivered'?'✓':type==='Webhook failed'?'!':type==='Paused'?'Ⅱ':type==='Resumed'?'↻':'×';
+  const eventIcon=(type:string)=>type==='Created'?'＋':type==='Run'?'▶':type==='Scheduled run'?'⏱':type==='Webhook delivered'||type==='Google Sheets updated'?'✓':type==='Webhook failed'||type==='Google Sheets failed'?'!':type==='Paused'?'Ⅱ':type==='Resumed'?'↻':'×';
 
   return <div className="shell">
     <aside className="sidebar">
@@ -285,10 +309,10 @@ export default function App() {
           <div className="stats"><Stat label="Total workflows" value={items.length} note="Saved on this computer"/><Stat label="Active workflows" value={active} note="Ready to be triggered"/><Stat label="Workflow runs" value={runs} note="Manual and scheduled runs"/></div>
           <section className="panel"><div className="panel-head"><div><h2>Your workflows</h2><p>Manage the automations in your workspace.</p></div><div className="tools"><input aria-label="Search workflows" placeholder="⌕  Search workflows" value={query} onChange={e=>setQuery(e.target.value)}/><button className="secondary" onClick={()=>setQuery('')}>Clear</button></div></div>
             <div className="table-head"><span>WORKFLOW</span><span>TRIGGER</span><span>LAST UPDATED</span><span>STATUS</span><span></span></div>
-            {visible.length===0?<div className="empty"><b>No workflows found</b><p>Create a workflow to get started.</p></div>:visible.map(x=><article className="workflow" key={x.id}><div><b>{x.name}</b><p>{x.description}</p><small className="workflow-action">{x.actionType==='webhook'?'Action: Send webhook':'Action: Record reminder'}</small><small className="mobile">{x.trigger} · {x.runs} runs</small></div><span>{x.trigger}</span><span>{x.updatedAt}</span><button className={'pill '+(x.active?'on':'off')} onClick={()=>toggle(x.id)} disabled={backendStatus!=='online'}>{x.active?'● Active':'● Paused'}</button><div className="actions"><button onClick={()=>run(x.id)} disabled={backendStatus!=='online'}>Run</button><button onClick={()=>remove(x.id)} disabled={backendStatus!=='online'} aria-label={'Delete '+x.name}>×</button></div></article>)}
+            {visible.length===0?<div className="empty"><b>No workflows found</b><p>Create a workflow to get started.</p></div>:visible.map(x=><article className="workflow" key={x.id}><div><b>{x.name}</b><p>{x.description}</p><small className="workflow-action">{x.actionType==='webhook'?'Action: Send webhook':x.actionType==='google-sheets'?'Action: Add row to Google Sheets':'Action: Record reminder'}</small><small className="mobile">{x.trigger} · {x.runs} runs</small></div><span>{x.trigger}</span><span>{x.updatedAt}</span><button className={'pill '+(x.active?'on':'off')} onClick={()=>toggle(x.id)} disabled={backendStatus!=='online'}>{x.active?'● Active':'● Paused'}</button><div className="actions"><button onClick={()=>run(x.id)} disabled={backendStatus!=='online'}>Run</button><button onClick={()=>remove(x.id)} disabled={backendStatus!=='online'} aria-label={'Delete '+x.name}>×</button></div></article>)}
             <div className="footnote">Showing {visible.length} of {items.length} workflows <span>Backend storage · Local computer</span></div>
           </section>
-          <div className="callout"><b>✦ Real workflow actions</b><p>Reminder workflows add an activity record. Webhook workflows send an HTTP POST to your configured public HTTPS endpoint when manually run or scheduled. Your backend must remain running.</p></div>
+          <div className="callout"><b>✦ Real workflow actions</b><p>Reminder workflows add an activity record. Webhook workflows send HTTP POST requests, and Google Sheets workflows append rows to your spreadsheet. External actions run when triggered while the DevFlow backend is running.</p></div>
         </> : <>
           <div className="welcome"><div><small className="eyebrow">WORKSPACE HISTORY</small><h1>Activity log</h1><p>Review recent workflow actions and scheduled runs.</p></div><button className="secondary" onClick={()=>setPage('overview')}>← Back to overview</button></div>
           <section className="panel activity-panel"><div className="panel-head"><div><h2>Recent activity</h2><p>Your 100 most recent events are saved by the backend.</p></div><span className="activity-count">{logs.length} / 100 events</span></div>
@@ -300,9 +324,10 @@ export default function App() {
         <footer>DEVFLOW · A lightweight workflow workspace <span>Built to make busywork smaller.</span></footer>
       </section>
     </main>
-    {creating&&<div className="backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setCreating(false)}}><form className="modal" onSubmit={create}><button type="button" className="close" onClick={()=>setCreating(false)}>×</button><small className="eyebrow">NEW AUTOMATION</small><h2>Create a workflow</h2><p>Choose a trigger and action for this workflow.</p><label>Workflow name<input required maxLength={60} autoFocus value={name} onChange={e=>setName(e.target.value)} placeholder="e.g. Send a weekly update"/></label><label>Description<textarea rows={3} maxLength={180} value={description} onChange={e=>setDescription(e.target.value)} placeholder="What should this workflow help you with?"/></label><div className="fields"><label>When should it run?<select value={trigger} onChange={e=>setTrigger(e.target.value)}><option value="manual">Only when I click Run</option><option value="every-1-minute">Every 1 minute (for testing)</option><option value="every-5-minutes">Every 5 minutes</option></select></label><label>What should it do?<select value={actionType} onChange={e=>setActionType(e.target.value as 'reminder'|'webhook')}><option value="reminder">Record a reminder</option><option value="webhook">Send a webhook (HTTP POST)</option></select></label></div>
+    {creating&&<div className="backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setCreating(false)}}><form className="modal" onSubmit={create}><button type="button" className="close" onClick={()=>setCreating(false)}>×</button><small className="eyebrow">NEW AUTOMATION</small><h2>Create a workflow</h2><p>Choose a trigger and action for this workflow.</p><label>Workflow name<input required maxLength={60} autoFocus value={name} onChange={e=>setName(e.target.value)} placeholder="e.g. Send a weekly update"/></label><label>Description<textarea rows={3} maxLength={180} value={description} onChange={e=>setDescription(e.target.value)} placeholder="What should this workflow help you with?"/></label><div className="fields"><label>When should it run?<select value={trigger} onChange={e=>setTrigger(e.target.value)}><option value="manual">Only when I click Run</option><option value="every-1-minute">Every 1 minute (for testing)</option><option value="every-5-minutes">Every 5 minutes</option></select></label><label>What should it do?<select value={actionType} onChange={e=>setActionType(e.target.value as 'reminder'|'webhook'|'google-sheets')}><option value="reminder">Record a reminder</option><option value="webhook">Send a webhook (HTTP POST)</option><option value="google-sheets">Add a row to Google Sheets</option></select></label></div>
       {actionType==='webhook'&&<label>Webhook URL (public HTTPS)<input type="url" required value={webhookUrl} onChange={e=>setWebhookUrl(e.target.value)} placeholder="https://your-service.com/webhook"/><small className="field-help">DevFlow sends a JSON POST containing the workflow name, ID, trigger, and run time. Use only an endpoint you trust.</small></label>}
-      <div className="modal-hint">{actionType==='webhook'?'Webhook endpoints must use a public HTTPS hostname. Private/local network addresses and redirects are blocked.':'This action records a reminder in the backend Activity Log.'} Scheduled workflows run while the DevFlow backend is running.</div><div className="modal-actions"><button type="button" className="secondary" onClick={()=>setCreating(false)}>Cancel</button><button className="primary">Create workflow</button></div></form></div>}
+      {actionType==='google-sheets'&&<label>Google Apps Script web app URL<input type="url" required value={googleSheetsUrl} onChange={e=>setGoogleSheetsUrl(e.target.value)} placeholder="https://script.google.com/macros/s/.../exec"/><small className="field-help">Paste the web app URL ending in /exec from the Apps Script deployment attached to your spreadsheet.</small></label>}
+      <div className="modal-hint">{actionType==='webhook'?'Webhook endpoints must use a public HTTPS hostname. Private/local network addresses and redirects are blocked.':actionType==='google-sheets'?'Each run sends the workflow details to your Google Apps Script web app, which appends a new row to your spreadsheet. Keep the deployment URL private.':'This action records a reminder in the backend Activity Log.'} Scheduled workflows run while the DevFlow backend is running.</div><div className="modal-actions"><button type="button" className="secondary" onClick={()=>setCreating(false)}>Cancel</button><button className="primary">Create workflow</button></div></form></div>}
   </div>;
 }
 function Stat({label,value,note}:{label:string;value:number;note:string}){return <div className="stat"><small>{label}</small><strong>{value}</strong><p>{note}</p></div>}
