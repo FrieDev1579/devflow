@@ -59,6 +59,9 @@ export default function App() {
   const [description,setDescription]=useState('');
   const [trigger,setTrigger]=useState('manual');
   const [action,setAction]=useState('Show an in-app reminder');
+  const [notificationPermission,setNotificationPermission]=useState<NotificationPermission | 'unsupported'>(() =>
+    typeof window !== 'undefined' && 'Notification' in window ? Notification.permission : 'unsupported'
+  );
 
   useEffect(()=>{ localStorage.setItem(KEY,JSON.stringify(items)); },[items]);
   useEffect(()=>{ localStorage.setItem(ACTIVITY_KEY,JSON.stringify(logs)); },[logs]);
@@ -81,20 +84,59 @@ export default function App() {
         id:makeId(),
         type:'Scheduled run',
         workflowName:item.name,
-        details:'Automatic reminder displayed by DevFlow in this browser.',
+        details:'Automatic reminder displayed in DevFlow. A desktop notification is sent when permission is enabled.',
         createdAt:new Date(now).toISOString()
       }));
+      if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+        due.forEach(item => {
+          try {
+            new Notification('DevFlow reminder', {
+              body: item.name + ' is due.',
+              tag: 'devflow-' + item.id
+            });
+          } catch {
+            // Keep the in-app reminder and activity log even if desktop notifications fail.
+          }
+        });
+      }
       setLogs(current=>[...events,...current].slice(0,50));
       setNotice(due.length===1
         ? '⏰ Scheduled reminder: '+due[0].name
         : '⏰ '+due.length+' scheduled workflow reminders are due.');
     },1000);
     return ()=>window.clearInterval(timer);
-  },[items]);
+  },[items,notificationPermission]);
 
   const visible=useMemo(()=>items.filter(x=>(x.name+' '+x.description).toLowerCase().includes(query.toLowerCase())),[items,query]);
   const active=items.filter(x=>x.active).length;
   const runs=items.reduce((sum,x)=>sum+x.runs,0);
+
+  async function enableNotifications() {
+    if (!('Notification' in window)) {
+      setNotificationPermission('unsupported');
+      setNotice('This browser does not support desktop notifications.');
+      return;
+    }
+    if (Notification.permission === 'granted') {
+      setNotificationPermission('granted');
+      setNotice('Desktop notifications are already enabled.');
+      return;
+    }
+    if (Notification.permission === 'denied') {
+      setNotificationPermission('denied');
+      setNotice('Notifications are blocked by your browser. Allow them in the site settings, then reload DevFlow.');
+      return;
+    }
+    try {
+      const permission = await Notification.requestPermission();
+      setNotificationPermission(permission);
+      setNotice(permission === 'granted'
+        ? 'Desktop notifications enabled. You will see a Windows notification when a scheduled workflow is due.'
+        : 'Desktop notifications were not enabled. In-app reminders will still work.');
+    } catch {
+      setNotice('Could not request notification permission. In-app reminders will still work.');
+    }
+  }
 
   function record(type:ActivityEvent['type'],workflowName:string,details:string) {
     setLogs(old=>[{id:makeId(),type,workflowName,details,createdAt:new Date().toISOString()},...old].slice(0,50));
@@ -179,7 +221,12 @@ export default function App() {
       {notice&&<div className="notice global-notice" role="status">{notice}<button onClick={()=>setNotice('')}>×</button></div>}
       <section className="content">
         {page!=='activity' ? <>
-          <div className="welcome"><div><small className="eyebrow">YOUR WORKSPACE</small><h1>Good work starts with a flow.</h1><p>Create, manage, and keep track of the workflows that save you time.</p></div><button className="primary" onClick={()=>setCreating(true)}>＋ New workflow</button></div>
+          <div className="welcome"><div><small className="eyebrow">YOUR WORKSPACE</small><h1>Good work starts with a flow.</h1><p>Create, manage, and keep track of the workflows that save you time.</p></div><div className="welcome-actions">
+            <button className="secondary notification-button" onClick={enableNotifications} disabled={notificationPermission==='granted' || notificationPermission==='unsupported' || notificationPermission==='denied'}>
+              {notificationPermission==='granted'?'✓ Desktop notifications on':notificationPermission==='denied'?'Notifications blocked':notificationPermission==='unsupported'?'Notifications unavailable':'Enable desktop notifications'}
+            </button>
+            <button className="primary" onClick={()=>setCreating(true)}>＋ New workflow</button>
+          </div></div>
           <div className="stats"><Stat label="Total workflows" value={items.length} note="Across your workspace"/><Stat label="Active workflows" value={active} note="Ready to be triggered"/><Stat label="Workflow runs" value={runs} note="Manual and scheduled runs"/></div>
           <section className="panel"><div className="panel-head"><div><h2>Your workflows</h2><p>Manage the automations in your workspace.</p></div><div className="tools"><input aria-label="Search workflows" placeholder="⌕  Search workflows" value={query} onChange={e=>setQuery(e.target.value)}/><button className="secondary" onClick={()=>setQuery('')}>Clear</button></div></div>
             <div className="table-head"><span>WORKFLOW</span><span>TRIGGER</span><span>LAST UPDATED</span><span>STATUS</span><span></span></div>
