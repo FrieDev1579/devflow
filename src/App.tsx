@@ -421,20 +421,40 @@ export default function App() {
       <header><span>Workspace　/　<b>{page==='activity'?'Activity':page==='workflows'?'Workflows':'Overview'}</b></span><span className={backendStatus==='online'?'saved':'backend-status'}>{backendStatus==='online'?'● Backend online':backendStatus==='connecting'?'◌ Connecting to backend':'● Backend offline'}</span></header>
       {notice&&<div className="notice global-notice" role="status">{notice}<button onClick={()=>setNotice('')}>×</button></div>}
       <section className="content">
-        {page!=='activity' ? <>
-          <div className="welcome"><div><small className="eyebrow">YOUR WORKSPACE</small><h1>Good work starts with a flow.</h1><p>Create, manage, and keep track of the workflows that save you time.</p></div><div className="welcome-actions">
+        {page==='overview' ? <>
+          <div className="welcome"><div><small className="eyebrow">YOUR WORKSPACE</small><h1>Good work starts with a flow.</h1><p>Here's a quick look at the automations running in your workspace.</p></div><div className="welcome-actions">
             <button className="secondary notification-button" onClick={enableNotifications} disabled={notificationPermission==='granted'||notificationPermission==='unsupported'||notificationPermission==='denied'}>
               {notificationPermission==='granted'?'✓ Desktop notifications on':notificationPermission==='denied'?'Notifications blocked':notificationPermission==='unsupported'?'Notifications unavailable':'Enable desktop notifications'}
             </button>
             <button className="primary" onClick={()=>setCreating(true)} disabled={backendStatus!=='online'}>＋ New workflow</button>
           </div></div>
-          <div className="stats"><Stat label="Total workflows" value={items.length} note="Saved on this computer"/><Stat label="Active workflows" value={active} note="Ready to be triggered"/><Stat label="Workflow runs" value={runs} note="Manual and scheduled runs"/></div>
-          <section className="panel"><div className="panel-head"><div><h2>Your workflows</h2><p>Manage the automations in your workspace.</p></div><div className="tools"><input aria-label="Search workflows" placeholder="⌕  Search workflows" value={query} onChange={e=>setQuery(e.target.value)}/><button className="secondary" onClick={()=>setQuery('')}>Clear</button></div></div>
+          <div className="stats">
+            <Stat label="Total workflows" value={items.length} note="Saved on this computer"/>
+            <Stat label="Active workflows" value={active} note="Ready to be triggered"/>
+            <Stat label="Workflow runs" value={runs} note="Manual and scheduled runs"/>
+          </div>
+          <section className="panel overview-panel">
+            <div className="panel-head"><div><h2>Recent activity</h2><p>Your latest workflow actions at a glance.</p></div><button className="secondary" onClick={()=>setPage('activity')}>View all activity →</button></div>
+            {logs.length===0
+              ? <div className="empty"><b>No activity yet</b><p>Create or run a workflow and its activity will appear here.</p></div>
+              : <div className="activity-list">{logs.slice(0,5).map(event=><article className="activity-item" key={event.id}><span className={'activity-icon '+eventClass(event.type)}>{eventIcon(event.type)}</span><div className="activity-copy"><div><b>{event.type}: {event.workflowName}</b><time>{formatTime(event.createdAt)}</time></div><p>{event.details}</p></div></article>)}</div>}
+          </section>
+          <div className="overview-shortcuts">
+            <button className="shortcut-card" onClick={()=>setPage('workflows')}><strong>Manage workflows</strong><span>View, run, pause or delete your automations</span><b>Open workflows →</b></button>
+            <button className="shortcut-card" onClick={()=>setPage('activity')}><strong>Activity history</strong><span>Review successful and failed workflow actions</span><b>Open activity →</b></button>
+          </div>
+          <div className="callout"><b>✦ DevFlow workspace</b><p>Your workflows are stored on this computer. Scheduled actions continue while the DevFlow backend is running.</p></div>
+        </> : page==='workflows' ? <>
+          <div className="welcome"><div><small className="eyebrow">WORKSPACE AUTOMATIONS</small><h1>Your workflows</h1><p>Create, search, run, pause or remove your automations.</p></div><button className="primary" onClick={()=>setCreating(true)} disabled={backendStatus!=='online'}>＋ New workflow</button></div>
+          <section className="panel">
+            <div className="panel-head"><div><h2>All workflows</h2><p>{items.length} saved workflow{items.length===1?'':'s'} in this workspace.</p></div><div className="tools"><input aria-label="Search workflows" placeholder="⌕  Search workflows" value={query} onChange={e=>setQuery(e.target.value)}/><button className="secondary" onClick={()=>setQuery('')}>Clear</button></div></div>
             <div className="table-head"><span>WORKFLOW</span><span>TRIGGER</span><span>LAST UPDATED</span><span>STATUS</span><span></span></div>
-            {visible.length===0?<div className="empty"><b>No workflows found</b><p>Create a workflow to get started.</p></div>:visible.map(x=><article className="workflow" key={x.id}><div><b>{x.name}</b><p>{x.description}</p><small className="workflow-action">{x.actionType==='webhook'?'Action: Send webhook':x.actionType==='google-sheets'?'Action: Add row to Google Sheets':'Action: Record reminder'}</small><small className="mobile">{x.trigger} · {x.runs} runs</small></div><span>{x.trigger}</span><span>{x.updatedAt}</span><button className={'pill '+(x.active?'on':'off')} onClick={()=>toggle(x.id)} disabled={backendStatus!=='online'}>{x.active?'● Active':'● Paused'}</button><div className="actions"><button onClick={()=>startRun(x.id)} disabled={backendStatus!=='online'}>Run</button><button onClick={()=>remove(x.id)} disabled={backendStatus!=='online'} aria-label={'Delete '+x.name}>×</button></div></article>)}
+            {visible.length===0
+              ? <div className="empty"><b>{items.length===0?'No workflows yet':'No matching workflows'}</b><p>{items.length===0?'Create your first workflow to get started.':'Try another search term or clear the search.'}</p></div>
+              : visible.map(x=><article className="workflow" key={x.id}><div><b>{x.name}</b><p>{x.description}</p><small className="workflow-action">{x.actionType==='webhook'?'Action: Send webhook':x.actionType==='google-sheets'?'Action: Add row to Google Sheets':'Action: Record reminder'}</small><small className="mobile">{x.trigger} · {x.runs} runs</small></div><span>{x.trigger}</span><span>{x.updatedAt}</span><button className={'pill '+(x.active?'on':'off')} onClick={()=>toggle(x.id)} disabled={backendStatus!=='online'}>{x.active?'● Active':'● Paused'}</button><div className="actions"><button onClick={()=>startRun(x.id)} disabled={backendStatus!=='online'}>Run</button><button onClick={()=>remove(x.id)} disabled={backendStatus!=='online'} aria-label={'Delete '+x.name}>×</button></div></article>)}
             <div className="footnote">Showing {visible.length} of {items.length} workflows <span>Backend storage · Local computer</span></div>
           </section>
-          <div className="callout"><b>✦ Real workflow actions</b><p>Reminder workflows add an activity record. Webhook workflows send HTTP POST requests, and Google Sheets workflows append rows to your spreadsheet. External actions run when triggered while the DevFlow backend is running.</p></div>
+          <div className="callout"><b>✦ Workflow actions</b><p>Reminder workflows add an activity record. Webhooks send HTTP POST requests. Google Sheets workflows append rows to your spreadsheet. Dynamic Google Sheets fields ask for values each time you run that workflow.</p></div>
         </> : <>
           <div className="welcome"><div><small className="eyebrow">WORKSPACE HISTORY</small><h1>Activity log</h1><p>Review recent workflow actions and scheduled runs.</p></div><button className="secondary" onClick={()=>setPage('overview')}>← Back to overview</button></div>
           <section className="panel activity-panel"><div className="panel-head"><div><h2>Recent activity</h2><p>Your 100 most recent events are saved by the backend.</p></div><span className="activity-count">{logs.length} / 100 events</span></div>
@@ -442,6 +462,7 @@ export default function App() {
               <div className="activity-list">{logs.map(event=><article className="activity-item" key={event.id}><span className={'activity-icon '+eventClass(event.type)}>{eventIcon(event.type)}</span><div className="activity-copy"><div><b>{event.type}: {event.workflowName}</b><time>{formatTime(event.createdAt)}</time></div><p>{event.details}</p></div></article>)}</div>}
           </section>
           <div className="callout"><b>✦ About backend history</b><p>These records are saved in the project's data folder on this computer. They remain available after closing Chrome or restarting DevFlow.</p></div>
+        </>}
         </>}
         <footer>DEVFLOW · A lightweight workflow workspace <span>Built to make busywork smaller.</span></footer>
       </section>
