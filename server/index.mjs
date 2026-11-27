@@ -2,6 +2,8 @@ import { createServer } from 'node:http';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { lookup } from 'node:dns/promises';
+import { isIP } from 'node:net';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DATA_DIR = resolve(ROOT, 'data');
@@ -85,7 +87,9 @@ function cleanWorkflow(input) {
     name,
     description: String(input.description || '').trim().slice(0, 180) || 'A workflow created in DevFlow.',
     trigger: intervalMinutes ? 'Every ' + intervalMinutes + ' minute' + (intervalMinutes === 1 ? '' : 's') : 'Manual only',
-    action: 'Record a reminder',
+    action: input.actionType === 'webhook' ? 'Send webhook' : 'Record a reminder',
+    actionType: input.actionType === 'webhook' ? 'webhook' : 'reminder',
+    webhookUrl: input.actionType === 'webhook' ? String(input.webhookUrl || '').trim().slice(0, 2048) : '',
     active,
     runs: Math.max(0, Number.parseInt(input.runs, 10) || 0),
     updatedAt: String(input.updatedAt || 'Just now'),
@@ -94,6 +98,97 @@ function cleanWorkflow(input) {
       ? (Number.isFinite(nextRun) && nextRun > 0 ? nextRun : (active ? Date.now() + intervalMinutes * 60_000 : undefined))
       : undefined
   };
+}
+
+function isPublicAddress(address) {
+  const version = isIP(address);
+  if (version === 4) {
+    const parts = address.split('.').map(Number);
+    const [a, b] = parts;
+    if (a === 0 || a === 10 || a === 127 || a >= 224) return false;
+    if (a === 100 && b >= 64 && b <= 127) return false;
+    if (a === 169 && b === 254) return false;
+    if (a === 172 && b >= 16 && b <= 31) return false;
+    if (a === 192 && (b === 0 || b === 168)) return false;
+    if (a === 198 && (b === 18 || b === 19 || b === 51)) return false;
+    if (a === 203 && b === 0) return false;
+    return true;
+  }
+  if (version === 6) {
+    const normalized = address.toLowerCase();
+    if (normalized.startsWith('::ffff:')) return false;
+    const first = Number.parseInt(normalized.split(':')[0] || '0', 16);
+    return (first & 0xe000) === 0x2000 && !normalized.startsWith('2001:db8:');
+  }
+  return false;
+}
+
+async function deliverWebhook(workflow, source) {
+  let target;
+  try {
+    target = new URL(workflow.webhookUrl);
+  } catch {
+    return { ok: false, details: 'Webhook URL is invalid.' };
+  }
+  if (target.protocol !== 'https:' || target.username || target.password || (target.port && target.port !== '443')) {
+    return { ok: false, details: 'Webhook must use a public HTTPS URL on the standard port.' };
+  }
+  const hostname = target.hostname.toLowerCase();
+  if (!hostname || hostname === 'localhost' || hostname.endsWith('.localhost') ||
+      hostname.endsWith('.local') || hostname.endsWith('.internal') ||
+      hostname.endsWith('.test') || hostname.endsWith('.example') || isIP(hostname)) {
+    return { ok: false, details: 'Webhook host is not allowed. Use a public HTTPS hostname.' };
+  }
+
+  try {
+    const addresses = await lookup(hostname, { all: true, verbatim: true });
+    if (!addresses.length || addresses.some((entry) => !isPublicAddress(entry.address))) {
+      return { ok: false, details: 'Webhook host must resolve only to public IP addresses.' };
+    }
+  } catch {
+    return { ok: false, details: 'Could not resolve the webhook host. Check the URL and internet connection.' };
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+  try {
+    const response = await fetch(target, {
+      method: 'POST',
+      redirect: 'manual',
+      signal: controller.signal,
+      headers: { 'Content-Type': 'application/json', 'User-Agent': 'DevFlow-Webhook/0.1' },
+      body: JSON.stringify({
+        event: 'devflow.workflow.run',
+        workflow: {
+          id: workflow.id,
+          name: workflow.name,
+          description: workflow.description,
+          trigger: workflow.trigger
+        },
+        source,
+        executedAt: new Date().toISOString()
+      })
+    });
+    if (!response.ok) {
+      return { ok: false, details: 'Webhook endpoint returned HTTP ' + response.status + '.' };
+    }
+    return { ok: true, details: 'Webhook delivered successfully to ' + hostname + ' (HTTP ' + response.status + ').' };
+  } catch (error) {
+    return { ok: false, details: error.name === 'AbortError'
+      ? 'Webhook request timed out after 8 seconds.'
+      : 'Webhook delivery failed. Check the endpoint and try again.' };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function executeWorkflowAction(workflow, source) {
+  if (workflow.actionType !== 'webhook') {
+    return { ok: true, details: source === 'scheduled'
+      ? 'Scheduled reminder recorded by the DevFlow backend.'
+      : 'Manual reminder recorded by the DevFlow backend.' };
+  }
+  return deliverWebhook(workflow, source);
 }
 
 async function handle(request, response) {
@@ -136,10 +231,23 @@ async function handle(request, response) {
       nextRunAt: body.intervalMinutes ? Date.now() + Number(body.intervalMinutes) * 60_000 : undefined
     });
     if (!workflow) return sendJson(response, 400, { error: 'Please provide a workflow name.' });
+    if (workflow.actionType === 'webhook') {
+      let parsed;
+      try { parsed = new URL(workflow.webhookUrl); } catch {}
+      if (!workflow.webhookUrl || workflow.webhookUrl.length > 2048 || !parsed ||
+          parsed.protocol !== 'https:' || parsed.username || parsed.password ||
+          !parsed.hostname || isIP(parsed.hostname)) {
+        return sendJson(response, 400, { error: 'Enter a valid public HTTPS webhook URL.' });
+      }
+    }
     state.workflows.unshift(workflow);
-    addActivity('Created', workflow.name, workflow.intervalMinutes
-      ? 'Workflow saved on the DevFlow backend. It will be scheduled while the backend is running.'
-      : 'Manual workflow created and saved on the DevFlow backend.');
+    addActivity('Created', workflow.name, workflow.actionType === 'webhook'
+      ? (workflow.intervalMinutes
+        ? 'Webhook workflow saved. It will send an HTTP POST to the configured endpoint when scheduled.'
+        : 'Webhook workflow saved. It will send an HTTP POST when manually run.')
+      : (workflow.intervalMinutes
+        ? 'Workflow saved on the DevFlow backend. It will be scheduled while the backend is running.'
+        : 'Manual workflow created and saved on the DevFlow backend.'));
     await persist();
     return sendJson(response, 201, snapshot());
   }
@@ -167,9 +275,13 @@ async function handle(request, response) {
     }
 
     if (request.method === 'POST' && workflowRoute[2] === 'run') {
+      const result = await executeWorkflowAction(workflow, 'manual');
       workflow.runs += 1;
       workflow.updatedAt = 'Just now';
-      addActivity('Run', workflow.name, 'Manual run recorded by the DevFlow backend. External integrations are not connected yet.');
+      const eventType = workflow.actionType === 'webhook'
+        ? (result.ok ? 'Webhook delivered' : 'Webhook failed')
+        : 'Run';
+      addActivity(eventType, workflow.name, result.details);
       await persist();
       return sendJson(response, 200, snapshot());
     }
@@ -199,15 +311,15 @@ async function runDueWorkflows() {
     if (due.length === 0) return;
 
     for (const workflow of due) {
+      const result = await executeWorkflowAction(workflow, 'scheduled');
       workflow.runs += 1;
       workflow.updatedAt = 'Just now';
-      workflow.nextRunAt = now + workflow.intervalMinutes * 60_000;
-      addActivity(
-        'Scheduled run',
-        workflow.name,
-        'Scheduled reminder completed by the DevFlow backend. This run was recorded even if the browser was closed.'
-      );
-      console.log('[scheduler] Completed scheduled run: ' + workflow.name);
+      workflow.nextRunAt = Date.now() + workflow.intervalMinutes * 60_000;
+      const eventType = workflow.actionType === 'webhook'
+        ? (result.ok ? 'Webhook delivered' : 'Webhook failed')
+        : 'Scheduled run';
+      addActivity(eventType, workflow.name, result.details);
+      console.log('[scheduler] ' + (result.ok ? 'Completed' : 'Failed') + ' scheduled action: ' + workflow.name);
     }
     await persist();
   } catch (error) {
