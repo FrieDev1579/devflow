@@ -11,6 +11,7 @@ type Workflow = {
   googleSheetsUrl?: string;
   googleSheetsFields?: string[];
   googleSheetsCustomFields?: { name: string; value: string }[];
+  googleSheetsDynamicFields?: string[];
   active: boolean;
   runs: number;
   updatedAt: string;
@@ -43,7 +44,7 @@ function parseCustomGoogleSheetsFields(raw:string):{name:string;value:string}[] 
   const lines=raw.split(/\r?\n/).map(line=>line.trim()).filter(Boolean);
   if (lines.length>10) throw new Error('Add no more than 10 custom columns.');
   const usedNames=new Set(GOOGLE_SHEETS_FIELD_OPTIONS.map(field=>field.label.toLowerCase()));
-  return lines.map((line,index)=>{
+  return lines.map(line=>{
     const separator=line.indexOf('=');
     if (separator<1) throw new Error('Use one custom column per line in the format: Column name = Value.');
     const name=line.slice(0,separator).trim();
@@ -54,6 +55,26 @@ function parseCustomGoogleSheetsFields(raw:string):{name:string;value:string}[] 
     if (usedNames.has(normalized)) throw new Error('Custom column names must be unique and must not repeat a standard column name.');
     usedNames.add(normalized);
     return {name,value};
+  });
+}
+
+function parseDynamicGoogleSheetsFields(
+  raw:string,
+  customFields:{name:string;value:string}[]
+):string[] {
+  const lines=raw.split(/\r?\n/).map(line=>line.trim()).filter(Boolean);
+  if (lines.length>10) throw new Error('Add no more than 10 dynamic columns.');
+  const usedNames=new Set([
+    ...GOOGLE_SHEETS_FIELD_OPTIONS.map(field=>field.label.toLowerCase()),
+    ...customFields.map(field=>field.name.toLowerCase())
+  ]);
+  return lines.map(name=>{
+    const normalized=name.toLowerCase();
+    if (!name) throw new Error('Dynamic column names cannot be empty.');
+    if (name.length>60) throw new Error('Dynamic column names must be 60 characters or fewer.');
+    if (usedNames.has(normalized)) throw new Error('Dynamic column names must be unique and cannot repeat a standard or custom column.');
+    usedNames.add(normalized);
+    return name;
   });
 }
 
@@ -98,6 +119,9 @@ export default function App() {
   const [googleSheetsUrl,setGoogleSheetsUrl]=useState('');
   const [googleSheetsFields,setGoogleSheetsFields]=useState<string[]>(DEFAULT_GOOGLE_SHEETS_FIELDS);
   const [googleSheetsCustomFields,setGoogleSheetsCustomFields]=useState('');
+  const [googleSheetsDynamicFields,setGoogleSheetsDynamicFields]=useState('');
+  const [runDataWorkflow,setRunDataWorkflow]=useState<Workflow|null>(null);
+  const [runValues,setRunValues]=useState<Record<string,string>>({});
   const [notificationPermission,setNotificationPermission]=useState<NotificationPermission | 'unsupported'>(() =>
     typeof window !== 'undefined' && 'Notification' in window ? Notification.permission : 'unsupported'
   );
@@ -223,6 +247,7 @@ export default function App() {
       }
     }
     let parsedCustomGoogleSheetsFields:{name:string;value:string}[]=[];
+    let parsedDynamicGoogleSheetsFields:string[]=[];
     if (actionType==='google-sheets') {
       try {
         const parsed=new URL(googleSheetsUrl.trim());
@@ -240,8 +265,18 @@ export default function App() {
         setNotice(error instanceof Error?error.message:'Check your custom Google Sheets columns.');
         return;
       }
-      if (googleSheetsFields.length===0 && parsedCustomGoogleSheetsFields.length===0) {
-        setNotice('Select at least one standard column or add a custom column.');
+      try {
+        parsedDynamicGoogleSheetsFields=parseDynamicGoogleSheetsFields(googleSheetsDynamicFields,parsedCustomGoogleSheetsFields);
+      } catch (error) {
+        setNotice(error instanceof Error?error.message:'Check your dynamic Google Sheets columns.');
+        return;
+      }
+      if (googleSheetsFields.length===0 && parsedCustomGoogleSheetsFields.length===0 && parsedDynamicGoogleSheetsFields.length===0) {
+        setNotice('Select at least one standard column or add a custom or dynamic column.');
+        return;
+      }
+      if (parsedDynamicGoogleSheetsFields.length>0 && trigger!=='manual') {
+        setNotice('Dynamic columns need a manual trigger because DevFlow must ask you for their values each time.');
         return;
       }
     }
@@ -257,7 +292,8 @@ export default function App() {
           webhookUrl:actionType==='webhook'?webhookUrl.trim():'',
           googleSheetsUrl:actionType==='google-sheets'?googleSheetsUrl.trim():'',
           googleSheetsFields:actionType==='google-sheets'?googleSheetsFields:[],
-          googleSheetsCustomFields:actionType==='google-sheets'?parsedCustomGoogleSheetsFields:[]
+          googleSheetsCustomFields:actionType==='google-sheets'?parsedCustomGoogleSheetsFields:[],
+          googleSheetsDynamicFields:actionType==='google-sheets'?parsedDynamicGoogleSheetsFields:[]
         })
       });
       setItems(remote.workflows);
@@ -271,6 +307,7 @@ export default function App() {
       setGoogleSheetsUrl('');
       setGoogleSheetsFields(DEFAULT_GOOGLE_SHEETS_FIELDS);
       setGoogleSheetsCustomFields('');
+      setGoogleSheetsDynamicFields('');
       setCreating(false);
       setNotice(actionType==='webhook'
         ? 'Webhook workflow saved. Click Run to send a test POST to your endpoint.'
@@ -284,17 +321,50 @@ export default function App() {
     }
   }
 
-  async function run(id:string) {
+  function startRun(id:string) {
+    const workflow=items.find(item=>item.id===id);
+    if (workflow?.actionType==='google-sheets' && (workflow.googleSheetsDynamicFields?.length || 0)>0) {
+      const initialValues:Record<string,string>={};
+      workflow.googleSheetsDynamicFields?.forEach(field=>{initialValues[field]='';});
+      setRunValues(initialValues);
+      setRunDataWorkflow(workflow);
+      return;
+    }
+    void run(id);
+  }
+
+  async function run(id:string,dynamicValues:Record<string,string>={}) {
     try {
-      const remote=await apiRequest('/api/workflows/'+encodeURIComponent(id)+'/run',{method:'POST'});
+      const remote=await apiRequest('/api/workflows/'+encodeURIComponent(id)+'/run',{
+        method:'POST',
+        body:JSON.stringify({dynamicValues})
+      });
       setItems(remote.workflows);
       setLogs(remote.activity);
       seenEvents.current=new Set(remote.activity.map(event=>event.id));
       const latest=remote.activity[0];
       setNotice(latest?.details || 'Workflow action completed.');
+      setRunDataWorkflow(null);
+      setRunValues({});
     } catch (error) {
       setNotice(error instanceof Error?error.message:'Could not run the workflow.');
     }
+  }
+
+  function submitRun(e:FormEvent) {
+    e.preventDefault();
+    if (!runDataWorkflow) return;
+    for (const field of runDataWorkflow.googleSheetsDynamicFields || []) {
+      if (!runValues[field]?.trim()) {
+        setNotice('Please enter a value for '+field+'.');
+        return;
+      }
+      if (runValues[field].length>500) {
+        setNotice(field+' must be 500 characters or fewer.');
+        return;
+      }
+    }
+    void run(runDataWorkflow.id,runValues);
   }
 
   async function toggle(id:string) {
@@ -356,7 +426,7 @@ export default function App() {
           <div className="stats"><Stat label="Total workflows" value={items.length} note="Saved on this computer"/><Stat label="Active workflows" value={active} note="Ready to be triggered"/><Stat label="Workflow runs" value={runs} note="Manual and scheduled runs"/></div>
           <section className="panel"><div className="panel-head"><div><h2>Your workflows</h2><p>Manage the automations in your workspace.</p></div><div className="tools"><input aria-label="Search workflows" placeholder="⌕  Search workflows" value={query} onChange={e=>setQuery(e.target.value)}/><button className="secondary" onClick={()=>setQuery('')}>Clear</button></div></div>
             <div className="table-head"><span>WORKFLOW</span><span>TRIGGER</span><span>LAST UPDATED</span><span>STATUS</span><span></span></div>
-            {visible.length===0?<div className="empty"><b>No workflows found</b><p>Create a workflow to get started.</p></div>:visible.map(x=><article className="workflow" key={x.id}><div><b>{x.name}</b><p>{x.description}</p><small className="workflow-action">{x.actionType==='webhook'?'Action: Send webhook':x.actionType==='google-sheets'?'Action: Add row to Google Sheets':'Action: Record reminder'}</small><small className="mobile">{x.trigger} · {x.runs} runs</small></div><span>{x.trigger}</span><span>{x.updatedAt}</span><button className={'pill '+(x.active?'on':'off')} onClick={()=>toggle(x.id)} disabled={backendStatus!=='online'}>{x.active?'● Active':'● Paused'}</button><div className="actions"><button onClick={()=>run(x.id)} disabled={backendStatus!=='online'}>Run</button><button onClick={()=>remove(x.id)} disabled={backendStatus!=='online'} aria-label={'Delete '+x.name}>×</button></div></article>)}
+            {visible.length===0?<div className="empty"><b>No workflows found</b><p>Create a workflow to get started.</p></div>:visible.map(x=><article className="workflow" key={x.id}><div><b>{x.name}</b><p>{x.description}</p><small className="workflow-action">{x.actionType==='webhook'?'Action: Send webhook':x.actionType==='google-sheets'?'Action: Add row to Google Sheets':'Action: Record reminder'}</small><small className="mobile">{x.trigger} · {x.runs} runs</small></div><span>{x.trigger}</span><span>{x.updatedAt}</span><button className={'pill '+(x.active?'on':'off')} onClick={()=>toggle(x.id)} disabled={backendStatus!=='online'}>{x.active?'● Active':'● Paused'}</button><div className="actions"><button onClick={()=>startRun(x.id)} disabled={backendStatus!=='online'}>Run</button><button onClick={()=>remove(x.id)} disabled={backendStatus!=='online'} aria-label={'Delete '+x.name}>×</button></div></article>)}
             <div className="footnote">Showing {visible.length} of {items.length} workflows <span>Backend storage · Local computer</span></div>
           </section>
           <div className="callout"><b>✦ Real workflow actions</b><p>Reminder workflows add an activity record. Webhook workflows send HTTP POST requests, and Google Sheets workflows append rows to your spreadsheet. External actions run when triggered while the DevFlow backend is running.</p></div>
@@ -386,8 +456,12 @@ export default function App() {
           </div>
         </div>
         <label>Custom columns (optional)<textarea rows={3} value={googleSheetsCustomFields} onChange={e=>setGoogleSheetsCustomFields(e.target.value)} placeholder={'Department = Sales\nOwner = Your name\nProject = DevFlow'}/><small className="field-help">Add up to 10 fixed values, one per line, using Column name = Value. New column headings are added to your sheet automatically.</small></label>
+        <label>Dynamic columns (optional)<textarea rows={3} value={googleSheetsDynamicFields} onChange={e=>setGoogleSheetsDynamicFields(e.target.value)} placeholder={'Customer Name\nLead Status\nOrder Amount'}/><small className="field-help">Add up to 10 column names, one per line. When you click Run, DevFlow will ask you for each value and add it to that row. Dynamic columns require a manual trigger.</small></label>
       </>}
-      <div className="modal-hint">{actionType==='webhook'?'Webhook endpoints must use a public HTTPS hostname. Private/local network addresses and redirects are blocked.':actionType==='google-sheets'?'Selected columns are filled on each run. Custom columns use the fixed values you entered, and existing sheet columns are preserved. Keep the deployment URL private.':'This action records a reminder in the backend Activity Log.'} Scheduled workflows run while the DevFlow backend is running.</div><div className="modal-actions"><button type="button" className="secondary" onClick={()=>setCreating(false)}>Cancel</button><button className="primary">Create workflow</button></div></form></div>}
+      <div className="modal-hint">{actionType==='webhook'?'Webhook endpoints must use a public HTTPS hostname. Private/local network addresses and redirects are blocked.':actionType==='google-sheets'?'Selected columns are filled on each run. Custom columns use the fixed values you entered. Dynamic columns ask for fresh values whenever you click Run. Keep the deployment URL private.':'This action records a reminder in the backend Activity Log.'} Scheduled workflows run while the DevFlow backend is running.</div><div className="modal-actions"><button type="button" className="secondary" onClick={()=>setCreating(false)}>Cancel</button><button className="primary">Create workflow</button></div></form></div>}
+    {runDataWorkflow&&<div className="backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setRunDataWorkflow(null)}}><form className="modal run-data-modal" onSubmit={submitRun}><button type="button" className="close" onClick={()=>setRunDataWorkflow(null)}>×</button><small className="eyebrow">WORKFLOW INPUT</small><h2>Enter run details</h2><p>These values will be added to the Google Sheets row for this run.</p>
+      {(runDataWorkflow.googleSheetsDynamicFields||[]).map(field=><label key={field}>{field}<input required maxLength={500} value={runValues[field]||''} onChange={e=>setRunValues(current=>({...current,[field]:e.target.value}))} placeholder={'Enter '+field.toLowerCase()}/></label>)}
+      <div className="modal-hint">These values are used for this run only. They are not saved as fixed workflow settings.</div><div className="modal-actions"><button type="button" className="secondary" onClick={()=>setRunDataWorkflow(null)}>Cancel</button><button className="primary">Run workflow</button></div></form></div>}
   </div>;
 }
 function Stat({label,value,note}:{label:string;value:number;note:string}){return <div className="stat"><small>{label}</small><strong>{value}</strong><p>{note}</p></div>}
