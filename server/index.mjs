@@ -114,6 +114,9 @@ function cleanWorkflow(input) {
         value: String(field?.value ?? '').trim().slice(0, 200)
       })).filter((field) => field.name)
     : [];
+  const googleSheetsDynamicFields = actionType === 'google-sheets' && Array.isArray(input.googleSheetsDynamicFields)
+    ? [...new Set(input.googleSheetsDynamicFields.map((field) => String(field || '').trim().slice(0, 60)).filter(Boolean))].slice(0, 10)
+    : [];
   return {
     id: String(input.id || id()),
     name,
@@ -125,6 +128,7 @@ function cleanWorkflow(input) {
     googleSheetsUrl: actionType === 'google-sheets' ? String(input.googleSheetsUrl || '').trim() : '',
     googleSheetsFields,
     googleSheetsCustomFields,
+    googleSheetsDynamicFields,
     active,
     runs: Math.max(0, Number.parseInt(input.runs, 10) || 0),
     updatedAt: String(input.updatedAt || 'Just now'),
@@ -172,7 +176,7 @@ function workflowEventPayload(workflow, source) {
   };
 }
 
-function googleSheetsEventPayload(workflow, source) {
+function googleSheetsEventPayload(workflow, source, dynamicValues = {}) {
   const payload = workflowEventPayload(workflow, source);
   const values = {
     receivedAt: new Date().toISOString(),
@@ -201,6 +205,16 @@ function googleSheetsEventPayload(workflow, source) {
       key: 'custom-' + index,
       label: String(field.name || '').trim(),
       value: String(field.value ?? '')
+    });
+  });
+  const dynamicFields = Array.isArray(workflow.googleSheetsDynamicFields)
+    ? workflow.googleSheetsDynamicFields
+    : [];
+  dynamicFields.forEach((field, index) => {
+    sheetsFields.push({
+      key: 'dynamic-' + index,
+      label: String(field),
+      value: dynamicValues[field] ?? ''
     });
   });
   return { ...payload, sheetsFields };
@@ -255,7 +269,7 @@ async function deliverWebhook(workflow, source) {
   }
 }
 
-async function deliverGoogleSheets(workflow, source) {
+async function deliverGoogleSheets(workflow, source, dynamicValues = {}) {
   let target;
   try {
     target = new URL(workflow.googleSheetsUrl);
@@ -286,7 +300,7 @@ async function deliverGoogleSheets(workflow, source) {
       redirect: 'manual',
       signal: controller.signal,
       headers: { 'Content-Type': 'application/json', 'User-Agent': 'DevFlow-Google-Sheets/0.1' },
-      body: JSON.stringify(googleSheetsEventPayload(workflow, source))
+      body: JSON.stringify(googleSheetsEventPayload(workflow, source, dynamicValues))
     });
 
     // Apps Script ContentService commonly redirects the response to script.googleusercontent.com.
@@ -333,9 +347,9 @@ async function deliverGoogleSheets(workflow, source) {
   }
 }
 
-async function executeWorkflowAction(workflow, source) {
+async function executeWorkflowAction(workflow, source, dynamicValues = {}) {
   if (workflow.actionType === 'webhook') return deliverWebhook(workflow, source);
-  if (workflow.actionType === 'google-sheets') return deliverGoogleSheets(workflow, source);
+  if (workflow.actionType === 'google-sheets') return deliverGoogleSheets(workflow, source, dynamicValues);
   return { ok: true, details: source === 'scheduled'
     ? 'Scheduled reminder recorded by the DevFlow backend.'
     : 'Manual reminder recorded by the DevFlow backend.' };
@@ -404,10 +418,17 @@ async function handle(request, response) {
       if (columnLabels.length === 0) {
         return sendJson(response, 400, { error: 'Choose at least one Google Sheets column or add a custom column.' });
       }
+      const dynamicLabels = workflow.googleSheetsDynamicFields;
+      const allLabels = columnLabels.concat(dynamicLabels);
+      const normalizedAllLabels = allLabels.map((label) => label.trim().toLowerCase());
       if (workflow.googleSheetsCustomFields.length > 10 ||
           workflow.googleSheetsCustomFields.some((field) => !field.name || !field.value) ||
-          new Set(normalizedLabels).size !== normalizedLabels.length) {
-        return sendJson(response, 400, { error: 'Custom column names and values must be filled in and column names must be unique.' });
+          dynamicLabels.length > 10 ||
+          new Set(normalizedAllLabels).size !== normalizedAllLabels.length) {
+        return sendJson(response, 400, { error: 'Column names must be unique. Custom fields need names and values.' });
+      }
+      if (dynamicLabels.length > 0 && workflow.intervalMinutes) {
+        return sendJson(response, 400, { error: 'Dynamic input fields require a manual trigger. Scheduled runs cannot ask you to enter values.' });
       }
     }
     state.workflows.unshift(workflow);
@@ -450,7 +471,30 @@ async function handle(request, response) {
     }
 
     if (request.method === 'POST' && workflowRoute[2] === 'run') {
-      const result = await executeWorkflowAction(workflow, 'manual');
+      const body = await readBody(request);
+      const suppliedValues = body.dynamicValues && typeof body.dynamicValues === 'object' && !Array.isArray(body.dynamicValues)
+        ? body.dynamicValues
+        : {};
+      const dynamicValues = {};
+      if (workflow.actionType === 'google-sheets') {
+        const allowedFields = new Set(workflow.googleSheetsDynamicFields || []);
+        for (const key of Object.keys(suppliedValues)) {
+          if (!allowedFields.has(key)) {
+            return sendJson(response, 400, { error: 'An unexpected dynamic field was supplied: ' + key });
+          }
+        }
+        for (const field of (workflow.googleSheetsDynamicFields || [])) {
+          const value = suppliedValues[field];
+          if (typeof value !== 'string' || !value.trim()) {
+            return sendJson(response, 400, { error: 'Please enter a value for ' + field + '.' });
+          }
+          if (value.length > 500) {
+            return sendJson(response, 400, { error: field + ' must be 500 characters or fewer.' });
+          }
+          dynamicValues[field] = value.trim();
+        }
+      }
+      const result = await executeWorkflowAction(workflow, 'manual', dynamicValues);
       workflow.runs += 1;
       workflow.updatedAt = 'Just now';
       const eventType = workflow.actionType === 'webhook'
