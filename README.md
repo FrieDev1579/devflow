@@ -10,6 +10,7 @@ A lightweight, beginner-friendly workspace for creating and managing simple work
 - Create, search, pause, resume, and delete workflows
 - Manually run workflows and track run counts
 - Schedule in-app reminders every 1 or 5 minutes
+- Optional desktop notifications for scheduled reminders (browser permission required)
 - Activity history for workflow creation, manual/scheduled runs, pauses, resumes, and deletions
 - Browser-local persistence using `localStorage`
 
@@ -40,7 +41,7 @@ npm run preview
 
 ## Scheduled workflow limitations
 
-The current scheduler is browser-side. It checks active scheduled workflows while the DevFlow page is open and displays an in-app reminder when a workflow is due. The browser tab must remain open. Closing the tab or browser stops scheduling until the app is opened again. It does not send emails, contact third-party services, or run server-side jobs. Workflow and activity data are stored only in the current browser.
+The current scheduler is browser-side. It checks active scheduled workflows while the DevFlow page is open and displays an in-app reminder when a workflow is due. When the user enables desktop notification permission, the browser also sends a desktop notification. The browser tab must remain open. Closing the tab or browser stops scheduling until the app is opened again. It does not send emails, contact third-party services, or run server-side jobs. Workflow and activity data are stored only in the current browser.
 
 ## Roadmap
 
