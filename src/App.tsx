@@ -122,6 +122,7 @@ export default function App() {
   const [googleSheetsDynamicFields,setGoogleSheetsDynamicFields]=useState('');
   const [runDataWorkflow,setRunDataWorkflow]=useState<Workflow|null>(null);
   const [runValues,setRunValues]=useState<Record<string,string>>({});
+  const [runError,setRunError]=useState('');
   const [notificationPermission,setNotificationPermission]=useState<NotificationPermission | 'unsupported'>(() =>
     typeof window !== 'undefined' && 'Notification' in window ? Notification.permission : 'unsupported'
   );
@@ -327,6 +328,7 @@ export default function App() {
       const initialValues:Record<string,string>={};
       workflow.googleSheetsDynamicFields?.forEach(field=>{initialValues[field]='';});
       setRunValues(initialValues);
+      setRunError('');
       setRunDataWorkflow(workflow);
       return;
     }
@@ -346,8 +348,11 @@ export default function App() {
       setNotice(latest?.details || 'Workflow action completed.');
       setRunDataWorkflow(null);
       setRunValues({});
+      setRunError('');
     } catch (error) {
-      setNotice(error instanceof Error?error.message:'Could not run the workflow.');
+      const message=error instanceof Error?error.message:'Could not run the workflow.';
+      if (runDataWorkflow) setRunError(message);
+      else setNotice(message);
     }
   }
 
@@ -356,11 +361,11 @@ export default function App() {
     if (!runDataWorkflow) return;
     for (const field of runDataWorkflow.googleSheetsDynamicFields || []) {
       if (!runValues[field]?.trim()) {
-        setNotice('Please enter a value for '+field+'.');
+        setRunError('Please enter a value for '+field+'.');
         return;
       }
       if (runValues[field].length>500) {
-        setNotice(field+' must be 500 characters or fewer.');
+        setRunError(field+' must be 500 characters or fewer.');
         return;
       }
     }
@@ -460,6 +465,7 @@ export default function App() {
       </>}
       <div className="modal-hint">{actionType==='webhook'?'Webhook endpoints must use a public HTTPS hostname. Private/local network addresses and redirects are blocked.':actionType==='google-sheets'?'Selected columns are filled on each run. Custom columns use the fixed values you entered. Dynamic columns ask for fresh values whenever you click Run. Keep the deployment URL private.':'This action records a reminder in the backend Activity Log.'} Scheduled workflows run while the DevFlow backend is running.</div><div className="modal-actions"><button type="button" className="secondary" onClick={()=>setCreating(false)}>Cancel</button><button className="primary">Create workflow</button></div></form></div>}
     {runDataWorkflow&&<div className="backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setRunDataWorkflow(null)}}><form className="modal run-data-modal" onSubmit={submitRun}><button type="button" className="close" onClick={()=>setRunDataWorkflow(null)}>×</button><small className="eyebrow">WORKFLOW INPUT</small><h2>Enter run details</h2><p>These values will be added to the Google Sheets row for this run.</p>
+      {runError&&<div className="notice run-error" role="alert">{runError}</div>}
       {(runDataWorkflow.googleSheetsDynamicFields||[]).map(field=><label key={field}>{field}<input required maxLength={500} value={runValues[field]||''} onChange={e=>setRunValues(current=>({...current,[field]:e.target.value}))} placeholder={'Enter '+field.toLowerCase()}/></label>)}
       <div className="modal-hint">These values are used for this run only. They are not saved as fixed workflow settings.</div><div className="modal-actions"><button type="button" className="secondary" onClick={()=>setRunDataWorkflow(null)}>Cancel</button><button className="primary">Run workflow</button></div></form></div>}
   </div>;
