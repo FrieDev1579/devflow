@@ -6,6 +6,8 @@ type Workflow = {
   description: string;
   trigger: string;
   action: string;
+  actionType?: 'reminder' | 'webhook';
+  webhookUrl?: string;
   active: boolean;
   runs: number;
   updatedAt: string;
@@ -60,13 +62,14 @@ export default function App() {
   const [name,setName]=useState('');
   const [description,setDescription]=useState('');
   const [trigger,setTrigger]=useState('manual');
+  const [actionType,setActionType]=useState<'reminder'|'webhook'>('reminder');
+  const [webhookUrl,setWebhookUrl]=useState('');
   const [notificationPermission,setNotificationPermission]=useState<NotificationPermission | 'unsupported'>(() =>
     typeof window !== 'undefined' && 'Notification' in window ? Notification.permission : 'unsupported'
   );
   const [backendStatus,setBackendStatus]=useState<'connecting'|'online'|'offline'>('connecting');
   const seenEvents=useRef<Set<string>>(new Set());
 
-  // Connect to the backend and migrate this browser's existing demo data once.
   useEffect(()=>{
     let mounted=true;
     async function connect() {
@@ -85,8 +88,8 @@ export default function App() {
         setItems(remote.workflows);
         setLogs(remote.activity);
         setBackendStatus('online');
-        setNotice('Connected to the DevFlow backend. Workflows are now stored on this computer.');
-      } catch (error) {
+        setNotice('Connected to the DevFlow backend. Workflows are stored on this computer.');
+      } catch {
         if (!mounted) return;
         setBackendStatus('offline');
         setNotice('Backend not connected. Start DevFlow with npm.cmd run dev from the project folder.');
@@ -96,11 +99,9 @@ export default function App() {
     return ()=>{mounted=false;};
   },[]);
 
-  // Keep a local browser copy as a convenience cache.
   useEffect(()=>{ localStorage.setItem(KEY,JSON.stringify(items)); },[items]);
   useEffect(()=>{ localStorage.setItem(ACTIVITY_KEY,JSON.stringify(logs)); },[logs]);
 
-  // Poll server-side activity while the UI is open. The scheduler itself runs in Node.
   useEffect(()=>{
     if (backendStatus!=='online') return;
     let mounted=true;
@@ -108,15 +109,19 @@ export default function App() {
       try {
         const remote=await apiRequest('/api/state');
         if (!mounted) return;
-        const newScheduled=remote.activity.filter(event=>
-          event.type==='Scheduled run' && !seenEvents.current.has(event.id)
+        const freshEvents=remote.activity.filter(event=>
+          !seenEvents.current.has(event.id) &&
+          (event.type==='Scheduled run' || event.type==='Webhook delivered' || event.type==='Webhook failed')
         );
         if (notificationPermission==='granted' && typeof Notification!=='undefined') {
-          newScheduled.forEach(event=>{
+          freshEvents.forEach(event=>{
             try {
-              new Notification('DevFlow reminder',{body:event.workflowName+' is due.',tag:'devflow-'+event.id});
+              new Notification(event.type==='Webhook failed'?'DevFlow webhook failed':'DevFlow workflow completed',{
+                body:event.workflowName+': '+event.details,
+                tag:'devflow-'+event.id
+              });
             } catch {
-              // The activity is still saved even when the browser suppresses a notification.
+              // Activity remains available even if the browser suppresses a notification.
             }
           });
         }
@@ -159,20 +164,35 @@ export default function App() {
       setNotificationPermission(permission);
       setNotice(permission==='granted'
         ? 'Desktop notifications enabled. Notifications arrive while this page is open and connected to the backend.'
-        : 'Desktop notifications were not enabled. Scheduled runs will still be saved in Activity.');
+        : 'Desktop notifications were not enabled. Scheduled events will still be saved in Activity.');
     } catch {
-      setNotice('Could not request notification permission. Scheduled runs will still be saved in Activity.');
+      setNotice('Could not request notification permission. Activity will still be saved.');
     }
   }
 
   async function create(e:FormEvent) {
     e.preventDefault();
     if (!name.trim()) return;
+    if (actionType==='webhook') {
+      try {
+        const parsed=new URL(webhookUrl.trim());
+        if (parsed.protocol!=='https:' || !parsed.hostname) throw new Error('Enter a valid HTTPS URL.');
+      } catch {
+        setNotice('Enter a valid public HTTPS webhook URL beginning with https://');
+        return;
+      }
+    }
     const intervalMinutes=trigger==='every-1-minute'?1:trigger==='every-5-minutes'?5:undefined;
     try {
       const remote=await apiRequest('/api/workflows',{
         method:'POST',
-        body:JSON.stringify({name:name.trim(),description:description.trim(),intervalMinutes})
+        body:JSON.stringify({
+          name:name.trim(),
+          description:description.trim(),
+          intervalMinutes,
+          actionType,
+          webhookUrl:actionType==='webhook'?webhookUrl.trim():''
+        })
       });
       setItems(remote.workflows);
       setLogs(remote.activity);
@@ -180,10 +200,14 @@ export default function App() {
       setName('');
       setDescription('');
       setTrigger('manual');
+      setActionType('reminder');
+      setWebhookUrl('');
       setCreating(false);
-      setNotice(intervalMinutes
-        ? 'Scheduled workflow saved on the backend. It will run even when Chrome is closed, as long as this computer and DevFlow backend remain running.'
-        : 'Workflow saved on the DevFlow backend.');
+      setNotice(actionType==='webhook'
+        ? 'Webhook workflow saved. Click Run to send a test POST to your endpoint.'
+        : intervalMinutes
+          ? 'Scheduled reminder saved on the backend.'
+          : 'Workflow saved on the DevFlow backend.');
     } catch (error) {
       setNotice(error instanceof Error?error.message:'Could not create the workflow.');
     }
@@ -195,7 +219,8 @@ export default function App() {
       setItems(remote.workflows);
       setLogs(remote.activity);
       seenEvents.current=new Set(remote.activity.map(event=>event.id));
-      setNotice('Manual run recorded by the DevFlow backend. Add an integration to perform an external action.');
+      const latest=remote.activity[0];
+      setNotice(latest?.details || 'Workflow action completed.');
     } catch (error) {
       setNotice(error instanceof Error?error.message:'Could not run the workflow.');
     }
@@ -235,6 +260,7 @@ export default function App() {
     return Number.isNaN(date.getTime())?'Just now':date.toLocaleString([], {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
   }
   const eventClass=(type:string)=>type.toLowerCase().replace(/\s+/g,'-');
+  const eventIcon=(type:string)=>type==='Created'?'＋':type==='Run'?'▶':type==='Scheduled run'?'⏱':type==='Webhook delivered'?'✓':type==='Webhook failed'?'!':type==='Paused'?'Ⅱ':type==='Resumed'?'↻':'×';
 
   return <div className="shell">
     <aside className="sidebar">
@@ -259,22 +285,24 @@ export default function App() {
           <div className="stats"><Stat label="Total workflows" value={items.length} note="Saved on this computer"/><Stat label="Active workflows" value={active} note="Ready to be triggered"/><Stat label="Workflow runs" value={runs} note="Manual and scheduled runs"/></div>
           <section className="panel"><div className="panel-head"><div><h2>Your workflows</h2><p>Manage the automations in your workspace.</p></div><div className="tools"><input aria-label="Search workflows" placeholder="⌕  Search workflows" value={query} onChange={e=>setQuery(e.target.value)}/><button className="secondary" onClick={()=>setQuery('')}>Clear</button></div></div>
             <div className="table-head"><span>WORKFLOW</span><span>TRIGGER</span><span>LAST UPDATED</span><span>STATUS</span><span></span></div>
-            {visible.length===0?<div className="empty"><b>No workflows found</b><p>Create a workflow to get started.</p></div>:visible.map(x=><article className="workflow" key={x.id}><div><b>{x.name}</b><p>{x.description}</p><small className="mobile">{x.trigger} · {x.runs} runs</small></div><span>{x.trigger}</span><span>{x.updatedAt}</span><button className={'pill '+(x.active?'on':'off')} onClick={()=>toggle(x.id)} disabled={backendStatus!=='online'}>{x.active?'● Active':'● Paused'}</button><div className="actions"><button onClick={()=>run(x.id)} disabled={backendStatus!=='online'}>Run</button><button onClick={()=>remove(x.id)} disabled={backendStatus!=='online'} aria-label={'Delete '+x.name}>×</button></div></article>)}
+            {visible.length===0?<div className="empty"><b>No workflows found</b><p>Create a workflow to get started.</p></div>:visible.map(x=><article className="workflow" key={x.id}><div><b>{x.name}</b><p>{x.description}</p><small className="workflow-action">{x.actionType==='webhook'?'Action: Send webhook':'Action: Record reminder'}</small><small className="mobile">{x.trigger} · {x.runs} runs</small></div><span>{x.trigger}</span><span>{x.updatedAt}</span><button className={'pill '+(x.active?'on':'off')} onClick={()=>toggle(x.id)} disabled={backendStatus!=='online'}>{x.active?'● Active':'● Paused'}</button><div className="actions"><button onClick={()=>run(x.id)} disabled={backendStatus!=='online'}>Run</button><button onClick={()=>remove(x.id)} disabled={backendStatus!=='online'} aria-label={'Delete '+x.name}>×</button></div></article>)}
             <div className="footnote">Showing {visible.length} of {items.length} workflows <span>Backend storage · Local computer</span></div>
           </section>
-          <div className="callout"><b>✦ Server-side scheduling</b><p>Scheduled runs are handled by the Node.js backend and saved on this computer. They continue while the computer and backend process are running, even if Chrome is closed. Desktop pop-up notifications require the app page to be open; runs missed while the page is closed appear in Activity when you return.</p></div>
+          <div className="callout"><b>✦ Real workflow actions</b><p>Reminder workflows add an activity record. Webhook workflows send an HTTP POST to your configured public HTTPS endpoint when manually run or scheduled. Your backend must remain running.</p></div>
         </> : <>
           <div className="welcome"><div><small className="eyebrow">WORKSPACE HISTORY</small><h1>Activity log</h1><p>Review recent workflow actions and scheduled runs.</p></div><button className="secondary" onClick={()=>setPage('overview')}>← Back to overview</button></div>
           <section className="panel activity-panel"><div className="panel-head"><div><h2>Recent activity</h2><p>Your 100 most recent events are saved by the backend.</p></div><span className="activity-count">{logs.length} / 100 events</span></div>
             {logs.length===0 ? <div className="empty"><b>No activity yet</b><p>Create, pause, resume, or run a workflow. Your actions will appear here.</p></div> :
-              <div className="activity-list">{logs.map(event=><article className="activity-item" key={event.id}><span className={'activity-icon '+eventClass(event.type)}>{event.type==='Created'?'＋':event.type==='Run'?'▶':event.type==='Scheduled run'?'⏱':event.type==='Paused'?'Ⅱ':event.type==='Resumed'?'↻':'×'}</span><div className="activity-copy"><div><b>{event.type}: {event.workflowName}</b><time>{formatTime(event.createdAt)}</time></div><p>{event.details}</p></div></article>)}</div>}
+              <div className="activity-list">{logs.map(event=><article className="activity-item" key={event.id}><span className={'activity-icon '+eventClass(event.type)}>{eventIcon(event.type)}</span><div className="activity-copy"><div><b>{event.type}: {event.workflowName}</b><time>{formatTime(event.createdAt)}</time></div><p>{event.details}</p></div></article>)}</div>}
           </section>
           <div className="callout"><b>✦ About backend history</b><p>These records are saved in the project's data folder on this computer. They remain available after closing Chrome or restarting DevFlow.</p></div>
         </>}
         <footer>DEVFLOW · A lightweight workflow workspace <span>Built to make busywork smaller.</span></footer>
       </section>
     </main>
-    {creating&&<div className="backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setCreating(false)}}><form className="modal" onSubmit={create}><button type="button" className="close" onClick={()=>setCreating(false)}>×</button><small className="eyebrow">NEW AUTOMATION</small><h2>Create a workflow</h2><p>Choose a schedule and DevFlow will run it from the backend.</p><label>Workflow name<input required maxLength={60} autoFocus value={name} onChange={e=>setName(e.target.value)} placeholder="e.g. Take a screen break"/></label><label>Description<textarea rows={3} maxLength={180} value={description} onChange={e=>setDescription(e.target.value)} placeholder="What should this workflow help you with?"/></label><div className="fields"><label>When should it run?<select value={trigger} onChange={e=>setTrigger(e.target.value)}><option value="manual">Only when I click Run</option><option value="every-1-minute">Every 1 minute (for testing)</option><option value="every-5-minutes">Every 5 minutes</option></select></label><label>Action<select disabled value="record"> <option value="record">Record a reminder</option></select></label></div><div className="modal-hint">The backend saves each scheduled run, even when Chrome is closed. Keep the DevFlow backend running on your computer.</div><div className="modal-actions"><button type="button" className="secondary" onClick={()=>setCreating(false)}>Cancel</button><button className="primary">Create workflow</button></div></form></div>}
-    </div>;
+    {creating&&<div className="backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setCreating(false)}}><form className="modal" onSubmit={create}><button type="button" className="close" onClick={()=>setCreating(false)}>×</button><small className="eyebrow">NEW AUTOMATION</small><h2>Create a workflow</h2><p>Choose a trigger and action for this workflow.</p><label>Workflow name<input required maxLength={60} autoFocus value={name} onChange={e=>setName(e.target.value)} placeholder="e.g. Send a weekly update"/></label><label>Description<textarea rows={3} maxLength={180} value={description} onChange={e=>setDescription(e.target.value)} placeholder="What should this workflow help you with?"/></label><div className="fields"><label>When should it run?<select value={trigger} onChange={e=>setTrigger(e.target.value)}><option value="manual">Only when I click Run</option><option value="every-1-minute">Every 1 minute (for testing)</option><option value="every-5-minutes">Every 5 minutes</option></select></label><label>What should it do?<select value={actionType} onChange={e=>setActionType(e.target.value as 'reminder'|'webhook')}><option value="reminder">Record a reminder</option><option value="webhook">Send a webhook (HTTP POST)</option></select></label></div>
+      {actionType==='webhook'&&<label>Webhook URL (public HTTPS)<input type="url" required value={webhookUrl} onChange={e=>setWebhookUrl(e.target.value)} placeholder="https://your-service.com/webhook"/><small className="field-help">DevFlow sends a JSON POST containing the workflow name, ID, trigger, and run time. Use only an endpoint you trust.</small></label>}
+      <div className="modal-hint">{actionType==='webhook'?'Webhook endpoints must use a public HTTPS hostname. Private/local network addresses and redirects are blocked.':'This action records a reminder in the backend Activity Log.'} Scheduled workflows run while the DevFlow backend is running.</div><div className="modal-actions"><button type="button" className="secondary" onClick={()=>setCreating(false)}>Cancel</button><button className="primary">Create workflow</button></div></form></div>}
+  </div>;
 }
 function Stat({label,value,note}:{label:string;value:number;note:string}){return <div className="stat"><small>{label}</small><strong>{value}</strong><p>{note}</p></div>}
