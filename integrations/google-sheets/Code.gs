@@ -24,7 +24,7 @@ function doPost(e) {
       : legacyFields(payload);
 
     if (!incomingFields.length || incomingFields.length > 27) {
-      throw new Error("The request must contain between 1 and 17 spreadsheet fields.");
+      throw new Error("The request must contain between 1 and 27 spreadsheet fields.");
     }
 
     const valuesByHeader = new Map();
