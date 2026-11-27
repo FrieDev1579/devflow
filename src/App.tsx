@@ -463,7 +463,6 @@ export default function App() {
           </section>
           <div className="callout"><b>✦ About backend history</b><p>These records are saved in the project's data folder on this computer. They remain available after closing Chrome or restarting DevFlow.</p></div>
         </>}
-        </>}
         <footer>DEVFLOW · A lightweight workflow workspace <span>Built to make busywork smaller.</span></footer>
       </section>
     </main>
