@@ -79,7 +79,19 @@ DevFlow can append one row to a Google spreadsheet whenever a workflow runs. Thi
 5. Copy the web app URL ending in `/exec`.
 6. In DevFlow, create a workflow and choose **Add a row to Google Sheets**. Paste the deployment URL, save the workflow, and click **Run** to test it.
 
-The script creates a tab named **DevFlow Runs** and adds a header row on the first run. Each later run appends the received time, workflow name, ID, description, trigger, run source, and execution time.
+The script creates a tab named **DevFlow Runs**. In the workflow form, you can choose which standard columns to fill on each run:
+
+- Received at
+- Workflow name
+- Workflow ID
+- Description
+- Trigger
+- Run source
+- Executed at
+
+You can also add up to 10 custom columns with fixed values, one per line, using the format `Column name = Value` (for example, `Department = Sales`). The script adds newly requested column headings to the right of existing headings and preserves prior rows. When a workflow omits a column that already exists in the sheet, that cell is left blank for that row.
+
+When changing the Apps Script code after its first deployment, save the code, then open **Deploy → Manage deployments**, edit the existing web-app deployment, choose **New version**, and deploy. This updates the existing deployment URL, so you normally do not need to replace the URL stored in DevFlow.
 
 **Important security note:** The Apps Script web app URL acts like a secret link. Anyone who obtains it may be able to append rows to that spreadsheet through this script. Keep it private. The script only appends rows; it does not provide a way to read the spreadsheet. This simple integration is intended for a personal/local MVP, not sensitive or production data.
 
