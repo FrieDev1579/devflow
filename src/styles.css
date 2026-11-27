@@ -40,3 +40,10 @@
 
 /* Backend connection status */
 .backend-status{color:#b7791f;font-size:11px}
+
+/* Webhook workflow form and activity feedback */
+.field-help{display:block;color:#8992a2;font-size:10px;font-weight:400;line-height:1.5}
+.workflow small.workflow-action{display:block;color:#7a83a0;font-size:10px;margin-top:5px}
+.activity-icon.webhook-delivered{background:#d1fae5;color:#047857}
+.activity-icon.webhook-failed{background:#fee2e2;color:#b91c1c}
+.modal input[type="url"]{width:100%}
