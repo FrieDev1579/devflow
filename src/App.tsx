@@ -9,6 +9,8 @@ type Workflow = {
   actionType?: 'reminder' | 'webhook' | 'google-sheets';
   webhookUrl?: string;
   googleSheetsUrl?: string;
+  googleSheetsFields?: string[];
+  googleSheetsCustomFields?: { name: string; value: string }[];
   active: boolean;
   runs: number;
   updatedAt: string;
@@ -26,6 +28,34 @@ type ApiState = { workflows: Workflow[]; activity: ActivityEvent[] };
 
 const KEY='devflow-workflows-v1';
 const ACTIVITY_KEY='devflow-activity-v1';
+const GOOGLE_SHEETS_FIELD_OPTIONS=[
+  {key:'receivedAt',label:'Received at'},
+  {key:'workflowName',label:'Workflow name'},
+  {key:'workflowId',label:'Workflow ID'},
+  {key:'description',label:'Description'},
+  {key:'trigger',label:'Trigger'},
+  {key:'source',label:'Run source'},
+  {key:'executedAt',label:'Executed at'}
+];
+const DEFAULT_GOOGLE_SHEETS_FIELDS=GOOGLE_SHEETS_FIELD_OPTIONS.map(field=>field.key);
+
+function parseCustomGoogleSheetsFields(raw:string):{name:string;value:string}[] {
+  const lines=raw.split(/\r?\n/).map(line=>line.trim()).filter(Boolean);
+  if (lines.length>10) throw new Error('Add no more than 10 custom columns.');
+  const usedNames=new Set(GOOGLE_SHEETS_FIELD_OPTIONS.map(field=>field.label.toLowerCase()));
+  return lines.map((line,index)=>{
+    const separator=line.indexOf('=');
+    if (separator<1) throw new Error('Use one custom column per line in the format: Column name = Value.');
+    const name=line.slice(0,separator).trim();
+    const value=line.slice(separator+1).trim();
+    const normalized=name.toLowerCase();
+    if (!name || !value) throw new Error('Each custom column needs both a name and a value.');
+    if (name.length>60 || value.length>200) throw new Error('Custom column names must be 60 characters or less and values 200 characters or less.');
+    if (usedNames.has(normalized)) throw new Error('Custom column names must be unique and must not repeat a standard column name.');
+    usedNames.add(normalized);
+    return {name,value};
+  });
+}
 
 function load(): Workflow[] {
   try {
@@ -66,6 +96,8 @@ export default function App() {
   const [actionType,setActionType]=useState<'reminder'|'webhook'|'google-sheets'>('reminder');
   const [webhookUrl,setWebhookUrl]=useState('');
   const [googleSheetsUrl,setGoogleSheetsUrl]=useState('');
+  const [googleSheetsFields,setGoogleSheetsFields]=useState<string[]>(DEFAULT_GOOGLE_SHEETS_FIELDS);
+  const [googleSheetsCustomFields,setGoogleSheetsCustomFields]=useState('');
   const [notificationPermission,setNotificationPermission]=useState<NotificationPermission | 'unsupported'>(() =>
     typeof window !== 'undefined' && 'Notification' in window ? Notification.permission : 'unsupported'
   );
@@ -190,6 +222,7 @@ export default function App() {
         return;
       }
     }
+    let parsedCustomGoogleSheetsFields:{name:string;value:string}[]=[];
     if (actionType==='google-sheets') {
       try {
         const parsed=new URL(googleSheetsUrl.trim());
@@ -199,6 +232,16 @@ export default function App() {
         }
       } catch {
         setNotice('Paste a valid Google Apps Script web app URL ending in /exec.');
+        return;
+      }
+      try {
+        parsedCustomGoogleSheetsFields=parseCustomGoogleSheetsFields(googleSheetsCustomFields);
+      } catch (error) {
+        setNotice(error instanceof Error?error.message:'Check your custom Google Sheets columns.');
+        return;
+      }
+      if (googleSheetsFields.length===0 && parsedCustomGoogleSheetsFields.length===0) {
+        setNotice('Select at least one standard column or add a custom column.');
         return;
       }
     }
@@ -212,7 +255,9 @@ export default function App() {
           intervalMinutes,
           actionType,
           webhookUrl:actionType==='webhook'?webhookUrl.trim():'',
-          googleSheetsUrl:actionType==='google-sheets'?googleSheetsUrl.trim():''
+          googleSheetsUrl:actionType==='google-sheets'?googleSheetsUrl.trim():'',
+          googleSheetsFields:actionType==='google-sheets'?googleSheetsFields:[],
+          googleSheetsCustomFields:actionType==='google-sheets'?parsedCustomGoogleSheetsFields:[]
         })
       });
       setItems(remote.workflows);
@@ -224,6 +269,8 @@ export default function App() {
       setActionType('reminder');
       setWebhookUrl('');
       setGoogleSheetsUrl('');
+      setGoogleSheetsFields(DEFAULT_GOOGLE_SHEETS_FIELDS);
+      setGoogleSheetsCustomFields('');
       setCreating(false);
       setNotice(actionType==='webhook'
         ? 'Webhook workflow saved. Click Run to send a test POST to your endpoint.'
@@ -326,7 +373,20 @@ export default function App() {
     </main>
     {creating&&<div className="backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setCreating(false)}}><form className="modal" onSubmit={create}><button type="button" className="close" onClick={()=>setCreating(false)}>×</button><small className="eyebrow">NEW AUTOMATION</small><h2>Create a workflow</h2><p>Choose a trigger and action for this workflow.</p><label>Workflow name<input required maxLength={60} autoFocus value={name} onChange={e=>setName(e.target.value)} placeholder="e.g. Send a weekly update"/></label><label>Description<textarea rows={3} maxLength={180} value={description} onChange={e=>setDescription(e.target.value)} placeholder="What should this workflow help you with?"/></label><div className="fields"><label>When should it run?<select value={trigger} onChange={e=>setTrigger(e.target.value)}><option value="manual">Only when I click Run</option><option value="every-1-minute">Every 1 minute (for testing)</option><option value="every-5-minutes">Every 5 minutes</option></select></label><label>What should it do?<select value={actionType} onChange={e=>setActionType(e.target.value as 'reminder'|'webhook'|'google-sheets')}><option value="reminder">Record a reminder</option><option value="webhook">Send a webhook (HTTP POST)</option><option value="google-sheets">Add a row to Google Sheets</option></select></label></div>
       {actionType==='webhook'&&<label>Webhook URL (public HTTPS)<input type="url" required value={webhookUrl} onChange={e=>setWebhookUrl(e.target.value)} placeholder="https://your-service.com/webhook"/><small className="field-help">DevFlow sends a JSON POST containing the workflow name, ID, trigger, and run time. Use only an endpoint you trust.</small></label>}
-      {actionType==='google-sheets'&&<label>Google Apps Script web app URL<input type="url" required value={googleSheetsUrl} onChange={e=>setGoogleSheetsUrl(e.target.value)} placeholder="https://script.google.com/macros/s/.../exec"/><small className="field-help">Paste the web app URL ending in /exec from the Apps Script deployment attached to your spreadsheet.</small></label>}
+      {actionType==='google-sheets'&&<>
+        <label>Google Apps Script web app URL<input type="url" required value={googleSheetsUrl} onChange={e=>setGoogleSheetsUrl(e.target.value)} placeholder="https://script.google.com/macros/s/.../exec"/><small className="field-help">Paste the web app URL ending in /exec from the Apps Script deployment attached to your spreadsheet.</small></label>
+        <div className="sheets-field-settings">
+          <span className="sheets-section-title">Standard columns to include</span>
+          <p className="field-help">Choose which workflow details should be filled in on each row.</p>
+          <div className="sheets-checkbox-grid">
+            {GOOGLE_SHEETS_FIELD_OPTIONS.map(field=><label className="sheets-checkbox" key={field.key}>
+              <input type="checkbox" checked={googleSheetsFields.includes(field.key)} onChange={e=>setGoogleSheetsFields(current=>e.target.checked?[...current,field.key]:current.filter(key=>key!==field.key))}/>
+              <span>{field.label}</span>
+            </label>)}
+          </div>
+        </div>
+        <label>Custom columns (optional)<textarea rows={3} value={googleSheetsCustomFields} onChange={e=>setGoogleSheetsCustomFields(e.target.value)} placeholder={'Department = Sales\nOwner = Your name\nProject = DevFlow'}/><small className="field-help">Add up to 10 fixed values, one per line, using Column name = Value. New column headings are added to your sheet automatically.</small></label>
+      </>}
       <div className="modal-hint">{actionType==='webhook'?'Webhook endpoints must use a public HTTPS hostname. Private/local network addresses and redirects are blocked.':actionType==='google-sheets'?'Each run sends the workflow details to your Google Apps Script web app, which appends a new row to your spreadsheet. Keep the deployment URL private.':'This action records a reminder in the backend Activity Log.'} Scheduled workflows run while the DevFlow backend is running.</div><div className="modal-actions"><button type="button" className="secondary" onClick={()=>setCreating(false)}>Cancel</button><button className="primary">Create workflow</button></div></form></div>}
   </div>;
 }
