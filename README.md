@@ -2,16 +2,16 @@
 
 A lightweight, beginner-friendly workspace for creating and managing simple workflows.
 
-> **Project status:** Early MVP / prototype. Workflow execution is simulated in the browser; no external services are contacted.
+> **Project status:** Early MVP / prototype. Scheduled reminders run in the browser while the app tab is open; workflows do not execute external actions.
 
 ## Features
 
 - Responsive workflow dashboard
 - Create, search, pause, resume, and delete workflows
-- Run workflows in demo mode and track demo run counts
-- Activity history for workflow creation, runs, pauses, resumes, and deletions
+- Manually run workflows and track run counts
+- Schedule in-app reminders every 1 or 5 minutes
+- Activity history for workflow creation, manual/scheduled runs, pauses, resumes, and deletions
 - Browser-local persistence using `localStorage`
-- Starter workflows to explore the interface
 
 ## Tech stack
 
@@ -38,17 +38,17 @@ npm run build
 npm run preview
 ```
 
-## Current limitations
+## Scheduled workflow limitations
 
-This is a frontend MVP. It does not yet include user accounts, a server-side database, scheduled jobs, third-party integrations, or real background automation. Workflow and activity data are stored in the current browser only. The Activity page records interface actions locally. The Run button demonstrates the interaction and updates a local counter; it does not execute external actions.
+The current scheduler is browser-side. It checks active scheduled workflows while the DevFlow page is open and displays an in-app reminder when a workflow is due. The browser tab must remain open. Closing the tab or browser stops scheduling until the app is opened again. It does not send emails, contact third-party services, or run server-side jobs. Workflow and activity data are stored only in the current browser.
 
 ## Roadmap
 
 - [ ] Add a backend API and persistent database
 - [ ] Add secure authentication and workspace accounts
 - [ ] Build a visual workflow editor
-- [ ] Add real triggers and action integrations
-- [ ] Add server-side execution logs, retries, and error handling
+- [ ] Add real triggers and third-party action integrations
+- [ ] Add server-side scheduling, execution logs, retries, and error handling
 - [ ] Add automated tests and deployment workflow
 
 ## Contributing
