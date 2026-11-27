@@ -414,7 +414,6 @@ async function handle(request, response) {
       }
       const columnLabels = workflow.googleSheetsFields.map((key) => GOOGLE_SHEETS_FIELD_LABELS[key])
         .concat(workflow.googleSheetsCustomFields.map((field) => field.name));
-      const normalizedLabels = columnLabels.map((label) => label.trim().toLowerCase());
       const dynamicLabels = workflow.googleSheetsDynamicFields;
       const allLabels = columnLabels.concat(dynamicLabels);
       if (allLabels.length === 0) {
