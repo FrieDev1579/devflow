@@ -110,7 +110,7 @@ function legacyFields(payload) {
 }
 
 function safeCellValue(value) {
-  if (typeof value === "string" && /^[=+@]/.test(value)) {
+  if (typeof value === "string" && /^[=+\-@]/.test(value)) {
     return "'" + value;
   }
   return value === undefined || value === null ? "" : value;
