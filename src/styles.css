@@ -33,3 +33,7 @@
 .modal-hint{border-radius:7px;background:#f5f6ff;color:#656b99;font-size:10px;line-height:1.5;padding:10px;margin-top:6px}
 .activity-icon.scheduled-run{background:#e0f2fe;color:#0369a1}
 @media(max-width:850px){.global-notice{margin:12px 18px 0}}
+
+/* Desktop notification controls */
+.welcome-actions{display:flex;align-items:center;justify-content:flex-end;gap:9px;flex-wrap:wrap}
+.notification-button:disabled{opacity:.75;cursor:default;background:#f0faf5;color:#147a58;border-color:#c5ead9}
