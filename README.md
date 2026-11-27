@@ -91,6 +91,8 @@ The script creates a tab named **DevFlow Runs**. In the workflow form, you can c
 
 You can also add up to 10 custom columns with fixed values, one per line, using the format `Column name = Value` (for example, `Department = Sales`). These are fixed values repeated on each run, not formulas or dynamic lookups. The script adds newly requested column headings to the right of existing headings and preserves prior rows. When a workflow omits a column that already exists in the sheet, that cell is left blank for that row.
 
+You can also add up to 10 **dynamic columns** by entering one column name per line, such as `Customer Name`, `Lead Status`, and `Order Amount`. These are not fixed values: when you click **Run**, DevFlow opens a small form and asks for the value of each dynamic field. The entered values are sent with that run and appear in the same spreadsheet row. They are not saved as workflow defaults. Dynamic input columns require **Only when I click Run**; scheduled runs cannot pause to ask for values.
+
 When changing the Apps Script code after its first deployment, save the code, then open **Deploy → Manage deployments**, edit the existing web-app deployment, choose **New version**, and deploy. This updates the existing deployment URL, so you normally do not need to replace the URL stored in DevFlow.
 
 **Important security note:** The Apps Script web app URL acts like a secret link. Anyone who obtains it may be able to append rows to that spreadsheet through this script. Keep it private. The script only appends rows; it does not provide a way to read the spreadsheet. This simple integration is intended for a personal/local MVP, not sensitive or production data.
