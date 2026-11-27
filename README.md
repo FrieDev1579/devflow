@@ -1,6 +1,6 @@
 # DevFlow
 
-A lightweight workflow workspace with a local Node.js scheduler and HTTPS webhook actions.
+A lightweight workflow workspace with a local Node.js scheduler, HTTPS webhooks, and Google Sheets actions.
 
 > **Project status:** Early MVP. Scheduled jobs run while the local Node.js backend is running. Webhook actions send JSON HTTP POST requests to configured public HTTPS endpoints.
 
@@ -89,7 +89,7 @@ The script creates a tab named **DevFlow Runs**. In the workflow form, you can c
 - Run source
 - Executed at
 
-You can also add up to 10 custom columns with fixed values, one per line, using the format `Column name = Value` (for example, `Department = Sales`). The script adds newly requested column headings to the right of existing headings and preserves prior rows. When a workflow omits a column that already exists in the sheet, that cell is left blank for that row.
+You can also add up to 10 custom columns with fixed values, one per line, using the format `Column name = Value` (for example, `Department = Sales`). These are fixed values repeated on each run, not formulas or dynamic lookups. The script adds newly requested column headings to the right of existing headings and preserves prior rows. When a workflow omits a column that already exists in the sheet, that cell is left blank for that row.
 
 When changing the Apps Script code after its first deployment, save the code, then open **Deploy → Manage deployments**, edit the existing web-app deployment, choose **New version**, and deploy. This updates the existing deployment URL, so you normally do not need to replace the URL stored in DevFlow.
 
