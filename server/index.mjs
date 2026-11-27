@@ -415,11 +415,11 @@ async function handle(request, response) {
       const columnLabels = workflow.googleSheetsFields.map((key) => GOOGLE_SHEETS_FIELD_LABELS[key])
         .concat(workflow.googleSheetsCustomFields.map((field) => field.name));
       const normalizedLabels = columnLabels.map((label) => label.trim().toLowerCase());
-      if (columnLabels.length === 0) {
-        return sendJson(response, 400, { error: 'Choose at least one Google Sheets column or add a custom column.' });
-      }
       const dynamicLabels = workflow.googleSheetsDynamicFields;
       const allLabels = columnLabels.concat(dynamicLabels);
+      if (allLabels.length === 0) {
+        return sendJson(response, 400, { error: 'Choose at least one Google Sheets column or add a custom or dynamic column.' });
+      }
       const normalizedAllLabels = allLabels.map((label) => label.trim().toLowerCase());
       if (workflow.googleSheetsCustomFields.length > 10 ||
           workflow.googleSheetsCustomFields.some((field) => !field.name || !field.value) ||
