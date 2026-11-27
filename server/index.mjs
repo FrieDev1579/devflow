@@ -89,7 +89,7 @@ function cleanWorkflow(input) {
     trigger: intervalMinutes ? 'Every ' + intervalMinutes + ' minute' + (intervalMinutes === 1 ? '' : 's') : 'Manual only',
     action: input.actionType === 'webhook' ? 'Send webhook' : 'Record a reminder',
     actionType: input.actionType === 'webhook' ? 'webhook' : 'reminder',
-    webhookUrl: input.actionType === 'webhook' ? String(input.webhookUrl || '').trim().slice(0, 2048) : '',
+    webhookUrl: input.actionType === 'webhook' ? String(input.webhookUrl || '').trim() : '',
     active,
     runs: Math.max(0, Number.parseInt(input.runs, 10) || 0),
     updatedAt: String(input.updatedAt || 'Just now'),
