@@ -61,3 +61,6 @@
 .modal label.sheets-checkbox{display:flex;flex-direction:row;align-items:center;gap:7px;margin:0;color:#687184;font-size:10px;font-weight:500}
 .modal label.sheets-checkbox input[type="checkbox"]{width:14px;height:14px;margin:0;accent-color:#6268e9}
 @media(max-width:520px){.sheets-checkbox-grid{grid-template-columns:1fr}}
+
+/* Keep tall create and run forms usable on smaller screens. */
+.modal{max-height:85vh;overflow-y:auto}
