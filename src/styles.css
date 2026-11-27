@@ -37,3 +37,6 @@
 /* Desktop notification controls */
 .welcome-actions{display:flex;align-items:center;justify-content:flex-end;gap:9px;flex-wrap:wrap}
 .notification-button:disabled{opacity:.75;cursor:default;background:#f0faf5;color:#147a58;border-color:#c5ead9}
+
+/* Backend connection status */
+.backend-status{color:#b7791f;font-size:11px}
