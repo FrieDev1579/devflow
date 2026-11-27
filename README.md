@@ -1,23 +1,24 @@
 # DevFlow
 
-A lightweight workflow workspace with a local Node.js scheduler.
+A lightweight workflow workspace with a local Node.js scheduler and HTTPS webhook actions.
 
-> **Project status:** Early MVP. The backend can keep scheduled reminder records running while the browser is closed, as long as the computer and backend process remain on. The current action records a reminder; it does not send email or contact external services.
+> **Project status:** Early MVP. Scheduled jobs run while the local Node.js backend is running. Webhook actions send JSON HTTP POST requests to configured public HTTPS endpoints.
 
 ## Features
 
 - Create, search, pause, resume, and delete workflows
 - Schedule workflows every 1 or 5 minutes
-- Node.js backend runs scheduled jobs independently of the browser tab
-- Workflow and activity data saved to `data/devflow.json`
-- Activity history for manual and scheduled runs
-- Optional desktop notifications while the page is open and connected
+- Persistent Node.js backend scheduler
+- Local JSON storage at `data/devflow.json`
+- Activity history for manual and scheduled workflow runs
+- Optional desktop notifications while the app page is open
+- HTTP POST webhook actions with delivery success/failure records
 
 ## Tech stack
 
 - React 18 and TypeScript
 - Vite
-- Node.js built-in HTTP server (no backend framework required)
+- Node.js built-in HTTP server and fetch (no backend framework required)
 
 ## Requirements
 
@@ -26,7 +27,7 @@ A lightweight workflow workspace with a local Node.js scheduler.
 
 ## Run locally
 
-Download/clone the repository, open its root folder (the one containing `package.json`) in VS Code, then run:
+Open the project root folder (the one containing `package.json`) in VS Code, then run:
 
 ```bash
 npm install
@@ -40,19 +41,53 @@ The `dev` command starts both services:
 
 Use **Ctrl+C** in the terminal to stop both processes.
 
+## Create a webhook workflow
+
+1. Open DevFlow and choose **New workflow**.
+2. Select a manual or scheduled trigger.
+3. Under **What should it do?**, choose **Send a webhook (HTTP POST)**.
+4. Paste a public HTTPS webhook endpoint you control.
+5. Save the workflow and click **Run** to test it.
+
+DevFlow posts a JSON body shaped like this:
+
+```json
+{
+  "event": "devflow.workflow.run",
+  "workflow": {
+    "id": "workflow-id",
+    "name": "Example workflow",
+    "description": "Example description",
+    "trigger": "Manual only"
+  },
+  "source": "manual",
+  "executedAt": "2026-01-01T12:00:00.000Z"
+}
+```
+
+For scheduled executions, `source` is `scheduled`. The Activity page shows whether the webhook was delivered or failed, along with the HTTP status or a short error.
+
+### Webhook safety
+
+- Only public HTTPS hostnames on the standard HTTPS port are accepted.
+- Local/private IP addresses, localhost-style hostnames, and IP-literal URLs are rejected.
+- HTTP redirects are not followed.
+- Requests time out after 8 seconds.
+- Use only webhook URLs you control or trust. Treat the endpoint URL as sensitive if it contains a token.
+
 ## Data storage
 
-The backend creates `data/devflow.json` automatically the first time it runs. This file is ignored by Git so your local workflow data is not published to the public repository. On first connection, DevFlow attempts to import existing workflows and activity from this browser's local storage if the backend has no saved data.
+The backend creates `data/devflow.json` automatically. This file is ignored by Git so local workflow data is not published. Existing browser-local workflows are imported if the backend has no saved data yet.
 
-Back up `data/devflow.json` if you want to keep your local workflow data when moving to another computer.
+Back up `data/devflow.json` before moving the project or switching computers.
 
 ## Scheduling behaviour and limitations
 
-The scheduler runs in the Node.js backend process, not in the browser. Scheduled jobs continue while Chrome is closed, provided the computer stays powered on and the DevFlow backend process is running. If the computer is shut down or the backend process is stopped, jobs pause; on restart, an overdue schedule is run once and its next run is scheduled from the restart time.
+Scheduled jobs run in the Node.js backend, not the browser. They continue while Chrome is closed, provided the computer stays powered on and the DevFlow backend process remains running. If the computer or backend is stopped, scheduling pauses. On restart, an overdue schedule is run once and its next run is scheduled from the restart time.
 
-The current scheduled action records a reminder in the server-side activity log. It does not yet send emails, call external APIs, or run arbitrary user-defined actions. Desktop notifications are delivered only while the app page is open and connected; runs recorded while the page is closed appear in Activity when you return.
+Webhook actions send actual HTTP POST requests. Reminder actions only add activity entries. Desktop pop-up notifications require the app page to be open and connected; actions that run while the page is closed appear in Activity when you return.
 
-This is a local development setup, not a public always-on cloud service. To run schedules 24/7, the backend would later need deployment to an always-on server.
+This is a local development setup, not a public always-on cloud service. To run schedules 24/7, deploy the backend to an always-on server.
 
 ## Build the frontend
 
@@ -63,11 +98,11 @@ npm run preview
 
 ## Roadmap
 
-- [ ] Add real action integrations (email, webhook, task creation)
+- [ ] Add more integration types and configurable payload templates
 - [ ] Add workflow editor and more trigger types
-- [ ] Add user accounts and secure workspaces
+- [ ] Add authentication and secure workspaces
 - [ ] Add a hosted backend for always-on scheduling
-- [ ] Add automated tests, execution retries, and monitoring
+- [ ] Add retries, secrets management, tests, and monitoring
 
 ## Contributing
 
