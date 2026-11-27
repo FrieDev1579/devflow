@@ -64,3 +64,5 @@
 
 /* Keep tall create and run forms usable on smaller screens. */
 .modal{max-height:85vh;overflow-y:auto}
+
+.run-error{background:#fff1f2;border-color:#fecdd3;color:#9f1239}
