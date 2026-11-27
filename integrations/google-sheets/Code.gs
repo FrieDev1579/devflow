@@ -23,7 +23,7 @@ function doPost(e) {
       ? payload.sheetsFields
       : legacyFields(payload);
 
-    if (!incomingFields.length || incomingFields.length > 17) {
+    if (!incomingFields.length || incomingFields.length > 27) {
       throw new Error("The request must contain between 1 and 17 spreadsheet fields.");
     }
 
