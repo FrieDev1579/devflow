@@ -47,3 +47,7 @@
 .activity-icon.webhook-delivered{background:#d1fae5;color:#047857}
 .activity-icon.webhook-failed{background:#fee2e2;color:#b91c1c}
 .modal input[type="url"]{width:100%}
+
+/* Google Sheets integration activity */
+.activity-icon.google-sheets-updated{background:#d1fae5;color:#047857}
+.activity-icon.google-sheets-failed{background:#fee2e2;color:#b91c1c}
