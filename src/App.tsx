@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 
 type Workflow = {
   id: string;
@@ -14,27 +14,23 @@ type Workflow = {
 };
 type ActivityEvent = {
   id: string;
-  type: 'Created' | 'Run' | 'Scheduled run' | 'Paused' | 'Resumed' | 'Deleted';
+  type: string;
   workflowName: string;
   details: string;
   createdAt: string;
 };
+type ApiState = { workflows: Workflow[]; activity: ActivityEvent[] };
 
-const initial: Workflow[] = [
-  { id:'wf-01', name:'Daily task reminder', description:'Create a daily reminder for tasks that are still pending.', trigger:'Manual only', action:'Show an in-app reminder', active:true, runs:24, updatedAt:'Today' },
-  { id:'wf-02', name:'New lead follow-up', description:'Prepare a follow-up task when a new lead is added.', trigger:'Manual only', action:'Show an in-app reminder', active:true, runs:12, updatedAt:'Yesterday' },
-  { id:'wf-03', name:'Weekly project summary', description:'Collect project notes into a weekly summary draft.', trigger:'Manual only', action:'Show an in-app reminder', active:false, runs:6, updatedAt:'2 days ago' }
-];
 const KEY='devflow-workflows-v1';
 const ACTIVITY_KEY='devflow-activity-v1';
 
 function load(): Workflow[] {
   try {
     const raw=localStorage.getItem(KEY);
-    if (!raw) return initial;
+    if (!raw) return [];
     const parsed=JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : initial;
-  } catch { return initial; }
+    return Array.isArray(parsed) ? parsed : [];
+  } catch { return []; }
 }
 function loadActivity(): ActivityEvent[] {
   try {
@@ -44,8 +40,14 @@ function loadActivity(): ActivityEvent[] {
     return Array.isArray(parsed) ? parsed : [];
   } catch { return []; }
 }
-function makeId() {
-  return typeof crypto!=='undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : String(Date.now()+Math.random());
+async function apiRequest(path:string, options:RequestInit = {}):Promise<ApiState> {
+  const response=await fetch(path,{
+    ...options,
+    headers:{'Content-Type':'application/json',...(options.headers || {})}
+  });
+  const result=await response.json().catch(()=>({error:'The backend returned an unreadable response.'}));
+  if (!response.ok) throw new Error(result.error || 'The backend request failed.');
+  return result as ApiState;
 }
 
 export default function App() {
@@ -58,54 +60,79 @@ export default function App() {
   const [name,setName]=useState('');
   const [description,setDescription]=useState('');
   const [trigger,setTrigger]=useState('manual');
-  const [action,setAction]=useState('Show an in-app reminder');
   const [notificationPermission,setNotificationPermission]=useState<NotificationPermission | 'unsupported'>(() =>
     typeof window !== 'undefined' && 'Notification' in window ? Notification.permission : 'unsupported'
   );
+  const [backendStatus,setBackendStatus]=useState<'connecting'|'online'|'offline'>('connecting');
+  const seenEvents=useRef<Set<string>>(new Set());
 
+  // Connect to the backend and migrate this browser's existing demo data once.
+  useEffect(()=>{
+    let mounted=true;
+    async function connect() {
+      try {
+        let remote=await apiRequest('/api/state');
+        const localWorkflows=load();
+        const localActivity=loadActivity();
+        if (remote.workflows.length===0 && (localWorkflows.length>0 || localActivity.length>0)) {
+          remote=await apiRequest('/api/state/import',{
+            method:'POST',
+            body:JSON.stringify({workflows:localWorkflows,activity:localActivity})
+          });
+        }
+        if (!mounted) return;
+        seenEvents.current=new Set(remote.activity.map(event=>event.id));
+        setItems(remote.workflows);
+        setLogs(remote.activity);
+        setBackendStatus('online');
+        setNotice('Connected to the DevFlow backend. Workflows are now stored on this computer.');
+      } catch (error) {
+        if (!mounted) return;
+        setBackendStatus('offline');
+        setNotice('Backend not connected. Start DevFlow with npm.cmd run dev from the project folder.');
+      }
+    }
+    connect();
+    return ()=>{mounted=false;};
+  },[]);
+
+  // Keep a local browser copy as a convenience cache.
   useEffect(()=>{ localStorage.setItem(KEY,JSON.stringify(items)); },[items]);
   useEffect(()=>{ localStorage.setItem(ACTIVITY_KEY,JSON.stringify(logs)); },[logs]);
 
-  // Lightweight browser-side scheduler. It only runs while this app is open.
+  // Poll server-side activity while the UI is open. The scheduler itself runs in Node.
   useEffect(()=>{
-    const timer=window.setInterval(()=>{
-      const now=Date.now();
-      const due=items.filter(item=>item.active && item.intervalMinutes && item.nextRunAt && item.nextRunAt<=now);
-      if (due.length===0) return;
-
-      const dueIds=new Set(due.map(item=>item.id));
-      setItems(current=>current.map(item=>{
-        if (!dueIds.has(item.id)) return item;
-        const interval=item.intervalMinutes ?? 1;
-        return {...item,runs:item.runs+1,updatedAt:'Just now',nextRunAt:now+interval*60_000};
-      }));
-
-      const events:ActivityEvent[]=due.map(item=>({
-        id:makeId(),
-        type:'Scheduled run',
-        workflowName:item.name,
-        details:'Automatic reminder displayed in DevFlow. A desktop notification is sent when permission is enabled.',
-        createdAt:new Date(now).toISOString()
-      }));
-      if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-        due.forEach(item => {
-          try {
-            new Notification('DevFlow reminder', {
-              body: item.name + ' is due.',
-              tag: 'devflow-' + item.id
-            });
-          } catch {
-            // Keep the in-app reminder and activity log even if desktop notifications fail.
-          }
-        });
+    if (backendStatus!=='online') return;
+    let mounted=true;
+    async function refresh() {
+      try {
+        const remote=await apiRequest('/api/state');
+        if (!mounted) return;
+        const newScheduled=remote.activity.filter(event=>
+          event.type==='Scheduled run' && !seenEvents.current.has(event.id)
+        );
+        if (notificationPermission==='granted' && typeof Notification!=='undefined') {
+          newScheduled.forEach(event=>{
+            try {
+              new Notification('DevFlow reminder',{body:event.workflowName+' is due.',tag:'devflow-'+event.id});
+            } catch {
+              // The activity is still saved even when the browser suppresses a notification.
+            }
+          });
+        }
+        seenEvents.current=new Set(remote.activity.map(event=>event.id));
+        setItems(remote.workflows);
+        setLogs(remote.activity);
+      } catch {
+        if (mounted) {
+          setBackendStatus('offline');
+          setNotice('Lost connection to the DevFlow backend. Check the terminal running DevFlow.');
+        }
       }
-      setLogs(current=>[...events,...current].slice(0,50));
-      setNotice(due.length===1
-        ? '⏰ Scheduled reminder: '+due[0].name
-        : '⏰ '+due.length+' scheduled workflow reminders are due.');
-    },1000);
-    return ()=>window.clearInterval(timer);
-  },[items,notificationPermission]);
+    }
+    const timer=window.setInterval(refresh,2500);
+    return ()=>{mounted=false;window.clearInterval(timer);};
+  },[backendStatus,notificationPermission]);
 
   const visible=useMemo(()=>items.filter(x=>(x.name+' '+x.description).toLowerCase().includes(query.toLowerCase())),[items,query]);
   const active=items.filter(x=>x.active).length;
@@ -117,95 +144,97 @@ export default function App() {
       setNotice('This browser does not support desktop notifications.');
       return;
     }
-    if (Notification.permission === 'granted') {
+    if (Notification.permission==='granted') {
       setNotificationPermission('granted');
       setNotice('Desktop notifications are already enabled.');
       return;
     }
-    if (Notification.permission === 'denied') {
+    if (Notification.permission==='denied') {
       setNotificationPermission('denied');
       setNotice('Notifications are blocked by your browser. Allow them in the site settings, then reload DevFlow.');
       return;
     }
     try {
-      const permission = await Notification.requestPermission();
+      const permission=await Notification.requestPermission();
       setNotificationPermission(permission);
-      setNotice(permission === 'granted'
-        ? 'Desktop notifications enabled. You will see a Windows notification when a scheduled workflow is due.'
-        : 'Desktop notifications were not enabled. In-app reminders will still work.');
+      setNotice(permission==='granted'
+        ? 'Desktop notifications enabled. Notifications arrive while this page is open and connected to the backend.'
+        : 'Desktop notifications were not enabled. Scheduled runs will still be saved in Activity.');
     } catch {
-      setNotice('Could not request notification permission. In-app reminders will still work.');
+      setNotice('Could not request notification permission. Scheduled runs will still be saved in Activity.');
     }
   }
 
-  function record(type:ActivityEvent['type'],workflowName:string,details:string) {
-    setLogs(old=>[{id:makeId(),type,workflowName,details,createdAt:new Date().toISOString()},...old].slice(0,50));
-  }
-  function create(e:FormEvent) {
+  async function create(e:FormEvent) {
     e.preventDefault();
-    if(!name.trim()) return;
+    if (!name.trim()) return;
     const intervalMinutes=trigger==='every-1-minute'?1:trigger==='every-5-minutes'?5:undefined;
-    const triggerLabel=trigger==='every-1-minute'?'Every 1 minute':trigger==='every-5-minutes'?'Every 5 minutes':'Manual only';
-    const workflowName=name.trim();
-    const newWorkflow:Workflow={
-      id:makeId(),
-      name:workflowName,
-      description:description.trim()||'A workflow created in DevFlow.',
-      trigger:triggerLabel,
-      action,
-      active:true,
-      runs:0,
-      updatedAt:'Just now',
-      intervalMinutes,
-      nextRunAt:intervalMinutes?Date.now()+intervalMinutes*60_000:undefined
-    };
-    setItems(old=>[newWorkflow,...old]);
-    record('Created',workflowName,intervalMinutes
-      ? 'Workflow created. It will run '+triggerLabel.toLowerCase()+' while DevFlow is open.'
-      : 'Manual workflow created. It runs when you click Run.');
-    setName('');
-    setDescription('');
-    setTrigger('manual');
-    setAction('Show an in-app reminder');
-    setCreating(false);
-    setNotice(intervalMinutes
-      ? 'Workflow created. Its first reminder is scheduled in '+intervalMinutes+' minute'+(intervalMinutes===1?'':'s')+'. Keep this tab open.'
-      : 'Workflow created. Use Run to trigger it manually.');
+    try {
+      const remote=await apiRequest('/api/workflows',{
+        method:'POST',
+        body:JSON.stringify({name:name.trim(),description:description.trim(),intervalMinutes})
+      });
+      setItems(remote.workflows);
+      setLogs(remote.activity);
+      seenEvents.current=new Set(remote.activity.map(event=>event.id));
+      setName('');
+      setDescription('');
+      setTrigger('manual');
+      setCreating(false);
+      setNotice(intervalMinutes
+        ? 'Scheduled workflow saved on the backend. It will run even when Chrome is closed, as long as this computer and DevFlow backend remain running.'
+        : 'Workflow saved on the DevFlow backend.');
+    } catch (error) {
+      setNotice(error instanceof Error?error.message:'Could not create the workflow.');
+    }
   }
-  function run(id:string) {
+
+  async function run(id:string) {
+    try {
+      const remote=await apiRequest('/api/workflows/'+encodeURIComponent(id)+'/run',{method:'POST'});
+      setItems(remote.workflows);
+      setLogs(remote.activity);
+      seenEvents.current=new Set(remote.activity.map(event=>event.id));
+      setNotice('Manual run recorded by the DevFlow backend. Add an integration to perform an external action.');
+    } catch (error) {
+      setNotice(error instanceof Error?error.message:'Could not run the workflow.');
+    }
+  }
+
+  async function toggle(id:string) {
     const item=items.find(x=>x.id===id);
-    if(!item) return;
-    setItems(old=>old.map(x=>x.id===id?{...x,runs:x.runs+1,updatedAt:'Just now'}:x));
-    record('Run',item.name,'Workflow started manually. This MVP displays an in-app reminder; it does not contact external services.');
-    setNotice('▶ Workflow run: '+item.name);
+    if (!item) return;
+    try {
+      const remote=await apiRequest('/api/workflows/'+encodeURIComponent(id),{
+        method:'PATCH',
+        body:JSON.stringify({active:!item.active})
+      });
+      setItems(remote.workflows);
+      setLogs(remote.activity);
+      seenEvents.current=new Set(remote.activity.map(event=>event.id));
+      setNotice(item.active?'Workflow paused on the backend.':'Workflow resumed on the backend.');
+    } catch (error) {
+      setNotice(error instanceof Error?error.message:'Could not update the workflow.');
+    }
   }
-  function toggle(id:string) {
-    const item=items.find(x=>x.id===id);
-    if(!item) return;
-    const nextActive=!item.active;
-    setItems(old=>old.map(x=>x.id===id?{
-      ...x,
-      active:nextActive,
-      updatedAt:'Just now',
-      nextRunAt:nextActive && x.intervalMinutes ? Date.now()+x.intervalMinutes*60_000 : x.nextRunAt
-    }:x));
-    record(nextActive?'Resumed':'Paused',item.name,nextActive
-      ? (item.intervalMinutes?'Workflow reactivated. Its schedule restarts from now.':'Workflow reactivated.')
-      : 'Workflow paused. Scheduled runs are stopped.');
-    setNotice(nextActive?'“'+item.name+'” was reactivated.':'“'+item.name+'” was paused.');
+
+  async function remove(id:string) {
+    try {
+      const remote=await apiRequest('/api/workflows/'+encodeURIComponent(id),{method:'DELETE'});
+      setItems(remote.workflows);
+      setLogs(remote.activity);
+      seenEvents.current=new Set(remote.activity.map(event=>event.id));
+      setNotice('Workflow deleted from the backend.');
+    } catch (error) {
+      setNotice(error instanceof Error?error.message:'Could not delete the workflow.');
+    }
   }
-  function remove(id:string) {
-    const item=items.find(x=>x.id===id);
-    if(!item) return;
-    setItems(old=>old.filter(x=>x.id!==id));
-    record('Deleted',item.name,'Workflow removed from this browser.');
-    setNotice('Workflow deleted.');
-  }
+
   function formatTime(value:string) {
     const date=new Date(value);
     return Number.isNaN(date.getTime())?'Just now':date.toLocaleString([], {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
   }
-  const eventClass=(type:ActivityEvent['type'])=>type.toLowerCase().replace(/\s+/g,'-');
+  const eventClass=(type:string)=>type.toLowerCase().replace(/\s+/g,'-');
 
   return <div className="shell">
     <aside className="sidebar">
@@ -214,38 +243,38 @@ export default function App() {
       <button className={'nav '+(page==='overview'?'active':'')} onClick={()=>setPage('overview')}>▦ &nbsp; Overview</button>
       <button className={'nav '+(page==='workflows'?'active':'')} onClick={()=>setPage('workflows')}>⌘ &nbsp; Workflows <span>{items.length}</span></button>
       <button className={'nav '+(page==='activity'?'active':'')} onClick={()=>setPage('activity')}>◷ &nbsp; Activity <span>{logs.length}</span></button>
-      <div className="side-bottom"><div className="tip"><b>✦ Build better flows</b><p>Start small. Automate the tasks you repeat every day.</p><button onClick={()=>setCreating(true)}>Create a workflow →</button></div><div className="profile"><span className="avatar">D</span><span><b>Demo workspace</b><small>Free plan</small></span></div></div>
+      <div className="side-bottom"><div className="tip"><b>✦ Build better flows</b><p>Start small. Automate the tasks you repeat every day.</p><button onClick={()=>setCreating(true)}>Create a workflow →</button></div><div className="profile"><span className="avatar">D</span><span><b>Demo workspace</b><small>Local server</small></span></div></div>
     </aside>
     <main>
-      <header><span>Workspace　/　<b>{page==='activity'?'Activity':page==='workflows'?'Workflows':'Overview'}</b></span><span className="saved">●　All changes saved</span></header>
+      <header><span>Workspace　/　<b>{page==='activity'?'Activity':page==='workflows'?'Workflows':'Overview'}</b></span><span className={backendStatus==='online'?'saved':'backend-status'}>{backendStatus==='online'?'● Backend online':backendStatus==='connecting'?'◌ Connecting to backend':'● Backend offline'}</span></header>
       {notice&&<div className="notice global-notice" role="status">{notice}<button onClick={()=>setNotice('')}>×</button></div>}
       <section className="content">
         {page!=='activity' ? <>
           <div className="welcome"><div><small className="eyebrow">YOUR WORKSPACE</small><h1>Good work starts with a flow.</h1><p>Create, manage, and keep track of the workflows that save you time.</p></div><div className="welcome-actions">
-            <button className="secondary notification-button" onClick={enableNotifications} disabled={notificationPermission==='granted' || notificationPermission==='unsupported' || notificationPermission==='denied'}>
+            <button className="secondary notification-button" onClick={enableNotifications} disabled={notificationPermission==='granted'||notificationPermission==='unsupported'||notificationPermission==='denied'}>
               {notificationPermission==='granted'?'✓ Desktop notifications on':notificationPermission==='denied'?'Notifications blocked':notificationPermission==='unsupported'?'Notifications unavailable':'Enable desktop notifications'}
             </button>
-            <button className="primary" onClick={()=>setCreating(true)}>＋ New workflow</button>
+            <button className="primary" onClick={()=>setCreating(true)} disabled={backendStatus!=='online'}>＋ New workflow</button>
           </div></div>
-          <div className="stats"><Stat label="Total workflows" value={items.length} note="Across your workspace"/><Stat label="Active workflows" value={active} note="Ready to be triggered"/><Stat label="Workflow runs" value={runs} note="Manual and scheduled runs"/></div>
+          <div className="stats"><Stat label="Total workflows" value={items.length} note="Saved on this computer"/><Stat label="Active workflows" value={active} note="Ready to be triggered"/><Stat label="Workflow runs" value={runs} note="Manual and scheduled runs"/></div>
           <section className="panel"><div className="panel-head"><div><h2>Your workflows</h2><p>Manage the automations in your workspace.</p></div><div className="tools"><input aria-label="Search workflows" placeholder="⌕  Search workflows" value={query} onChange={e=>setQuery(e.target.value)}/><button className="secondary" onClick={()=>setQuery('')}>Clear</button></div></div>
             <div className="table-head"><span>WORKFLOW</span><span>TRIGGER</span><span>LAST UPDATED</span><span>STATUS</span><span></span></div>
-            {visible.length===0?<div className="empty"><b>No workflows found</b><p>Try another search or create a workflow.</p></div>:visible.map(x=><article className="workflow" key={x.id}><div><b>{x.name}</b><p>{x.description}</p><small className="mobile">{x.trigger} · {x.runs} runs</small></div><span>{x.trigger}</span><span>{x.updatedAt}</span><button className={'pill '+(x.active?'on':'off')} onClick={()=>toggle(x.id)}>{x.active?'● Active':'● Paused'}</button><div className="actions"><button onClick={()=>run(x.id)}>Run</button><button onClick={()=>remove(x.id)} aria-label={'Delete '+x.name}>×</button></div></article>)}
-            <div className="footnote">Showing {visible.length} of {items.length} workflows <span>Demo workspace · Data saved locally</span></div>
+            {visible.length===0?<div className="empty"><b>No workflows found</b><p>Create a workflow to get started.</p></div>:visible.map(x=><article className="workflow" key={x.id}><div><b>{x.name}</b><p>{x.description}</p><small className="mobile">{x.trigger} · {x.runs} runs</small></div><span>{x.trigger}</span><span>{x.updatedAt}</span><button className={'pill '+(x.active?'on':'off')} onClick={()=>toggle(x.id)} disabled={backendStatus!=='online'}>{x.active?'● Active':'● Paused'}</button><div className="actions"><button onClick={()=>run(x.id)} disabled={backendStatus!=='online'}>Run</button><button onClick={()=>remove(x.id)} disabled={backendStatus!=='online'} aria-label={'Delete '+x.name}>×</button></div></article>)}
+            <div className="footnote">Showing {visible.length} of {items.length} workflows <span>Backend storage · Local computer</span></div>
           </section>
-          <div className="callout"><b>✦ Scheduled automation (local MVP)</b><p>New scheduled workflows run while this browser tab is open. They display in-app reminders and write activity events. They do not run when the browser is closed and do not contact external services.</p></div>
+          <div className="callout"><b>✦ Server-side scheduling</b><p>Scheduled runs are handled by the Node.js backend and saved on this computer. They continue while the computer and backend process are running, even if Chrome is closed. Desktop pop-up notifications require the app page to be open; runs missed while the page is closed appear in Activity when you return.</p></div>
         </> : <>
-          <div className="welcome"><div><small className="eyebrow">WORKSPACE HISTORY</small><h1>Activity log</h1><p>Review recent workflow actions and scheduled reminders.</p></div><button className="secondary" onClick={()=>setPage('overview')}>← Back to overview</button></div>
-          <section className="panel activity-panel"><div className="panel-head"><div><h2>Recent activity</h2><p>Your 50 most recent events are saved in this browser.</p></div><span className="activity-count">{logs.length} / 50 events</span></div>
+          <div className="welcome"><div><small className="eyebrow">WORKSPACE HISTORY</small><h1>Activity log</h1><p>Review recent workflow actions and scheduled runs.</p></div><button className="secondary" onClick={()=>setPage('overview')}>← Back to overview</button></div>
+          <section className="panel activity-panel"><div className="panel-head"><div><h2>Recent activity</h2><p>Your 100 most recent events are saved by the backend.</p></div><span className="activity-count">{logs.length} / 100 events</span></div>
             {logs.length===0 ? <div className="empty"><b>No activity yet</b><p>Create, pause, resume, or run a workflow. Your actions will appear here.</p></div> :
               <div className="activity-list">{logs.map(event=><article className="activity-item" key={event.id}><span className={'activity-icon '+eventClass(event.type)}>{event.type==='Created'?'＋':event.type==='Run'?'▶':event.type==='Scheduled run'?'⏱':event.type==='Paused'?'Ⅱ':event.type==='Resumed'?'↻':'×'}</span><div className="activity-copy"><div><b>{event.type}: {event.workflowName}</b><time>{formatTime(event.createdAt)}</time></div><p>{event.details}</p></div></article>)}</div>}
           </section>
-          <div className="callout"><b>✦ About activity history</b><p>These records are stored in this browser and are not synced across devices. Scheduled runs work only while DevFlow is open.</p></div>
+          <div className="callout"><b>✦ About backend history</b><p>These records are saved in the project's data folder on this computer. They remain available after closing Chrome or restarting DevFlow.</p></div>
         </>}
         <footer>DEVFLOW · A lightweight workflow workspace <span>Built to make busywork smaller.</span></footer>
       </section>
     </main>
-    {creating&&<div className="backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setCreating(false)}}><form className="modal" onSubmit={create}><button type="button" className="close" onClick={()=>setCreating(false)}>×</button><small className="eyebrow">NEW AUTOMATION</small><h2>Create a workflow</h2><p>Choose a schedule and DevFlow will remind you while this page is open.</p><label>Workflow name<input required maxLength={60} autoFocus value={name} onChange={e=>setName(e.target.value)} placeholder="e.g. Take a screen break"/></label><label>Description<textarea rows={3} maxLength={180} value={description} onChange={e=>setDescription(e.target.value)} placeholder="What should this workflow help you with?"/></label><div className="fields"><label>When should it run?<select value={trigger} onChange={e=>setTrigger(e.target.value)}><option value="manual">Only when I click Run</option><option value="every-1-minute">Every 1 minute (for testing)</option><option value="every-5-minutes">Every 5 minutes</option></select></label><label>What should it do?<select value={action} onChange={e=>setAction(e.target.value)}><option>Show an in-app reminder</option></select></label></div><div className="modal-hint">Scheduled workflows run only while DevFlow is open in this browser.</div><div className="modal-actions"><button type="button" className="secondary" onClick={()=>setCreating(false)}>Cancel</button><button className="primary">Create workflow</button></div></form></div>}
-  </div>;
+    {creating&&<div className="backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setCreating(false)}}><form className="modal" onSubmit={create}><button type="button" className="close" onClick={()=>setCreating(false)}>×</button><small className="eyebrow">NEW AUTOMATION</small><h2>Create a workflow</h2><p>Choose a schedule and DevFlow will run it from the backend.</p><label>Workflow name<input required maxLength={60} autoFocus value={name} onChange={e=>setName(e.target.value)} placeholder="e.g. Take a screen break"/></label><label>Description<textarea rows={3} maxLength={180} value={description} onChange={e=>setDescription(e.target.value)} placeholder="What should this workflow help you with?"/></label><div className="fields"><label>When should it run?<select value={trigger} onChange={e=>setTrigger(e.target.value)}><option value="manual">Only when I click Run</option><option value="every-1-minute">Every 1 minute (for testing)</option><option value="every-5-minutes">Every 5 minutes</option></select></label><label>Action<select disabled value="record"> <option value="record">Record a reminder</option></select></label></div><div className="modal-hint">The backend saves each scheduled run, even when Chrome is closed. Keep the DevFlow backend running on your computer.</div><div className="modal-actions"><button type="button" className="secondary" onClick={()=>setCreating(false)}>Cancel</button><button className="primary">Create workflow</button></div></form></div>}
+    </div>;
 }
 function Stat({label,value,note}:{label:string;value:number;note:string}){return <div className="stat"><small>{label}</small><strong>{value}</strong><p>{note}</p></div>}
